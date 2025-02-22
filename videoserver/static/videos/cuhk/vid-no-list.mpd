@@ -1,0 +1,18 @@
+<?xml version='1.0' encoding='utf-8'?>
+<MPD profiles="urn:mpeg:dash:profile:isoff-live:2011" minBufferTime="PT2.00S" mediaPresentationDuration="PT3M13.167S" type="static">
+  
+  <Period>
+    
+    <AdaptationSet mimeType="video/mp4" segmentAlignment="true" startWithSAP="1" maxWidth="512" maxHeight="214">
+      <SegmentTemplate timescale="1000" duration="2000" initialization="$RepresentationID$-init.mp4" media="$RepresentationID$-seg-$Number$.m4s" startNumber="1" />
+      <Representation id="video/vid-500" codecs="avc1.4D401F" width="512" height="214" scanType="progressive" frameRate="24" bandwidth="500" />
+      </AdaptationSet>
+    
+    <AdaptationSet mimeType="audio/mp4" startWithSAP="1" segmentAlignment="true" lang="en">
+      <SegmentTemplate timescale="1000" duration="2000" initialization="$RepresentationID$/init.mp4" media="$RepresentationID$/seg-$Number$.m4s" startNumber="1" />
+      <Representation id="audio/en/mp4a.40.2" codecs="mp4a.40.2" bandwidth="137265" audioSamplingRate="48000">
+        <AudioChannelConfiguration schemeIdUri="urn:mpeg:mpegB:cicp:ChannelConfiguration" value="2" />
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>

@@ -1,7 +1,3 @@
-videoserver/static/videos/cuhk/
-videoserver/static/videos/cuhk.tar.gz
-videoserver/static/videos/tears-of-steel/
-videoserver/static/videos/tears-of-steel.tar.gz
 build/
 __pycache__
 .venv
