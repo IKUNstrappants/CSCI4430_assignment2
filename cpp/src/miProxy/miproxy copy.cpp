@@ -24,6 +24,28 @@ void set_nonblocking(int socket) {
     fcntl(socket, F_SETFL, flags | O_NONBLOCK);
 }
 
+string modify_http_request(const string &request, const string &new_host, int port, int content_len=0)
+{
+  istringstream request_stream(request);
+  ostringstream modified_request;
+  string line;
+  
+  //modified_request << to_string(content_len) << "\r\n";
+  while (getline(request_stream, line))
+  {
+    if (line.find("Host:") == 0)
+    {
+      modified_request << "Host: " << new_host << ':' << port << "\r\n";
+    }
+    else
+    {
+      modified_request << line << "\r\n";
+    }
+  }
+
+  return modified_request.str();
+}
+
 void read_wrap(int socket, char* buffer, size_t length, int &readlen) {
     readlen = read(socket, buffer, length);
     if (readlen < 0) cerr << "read on socket " << socket << "failed" << endl;
@@ -32,13 +54,6 @@ void read_wrap(int socket, char* buffer, size_t length, int &readlen) {
 }
 
 void read_http(int origin_sock, string &buffer) {
-    if (true) {
-        char temp[8192] = "";
-        int readlen1;
-        read_wrap(origin_sock, temp, 8192, readlen1);
-        buffer = temp;
-        return ;
-    }
     cout << "begin read_http()" << endl;
     set_nonblocking(origin_sock);
     cout << "0>";
@@ -51,13 +66,12 @@ void read_http(int origin_sock, string &buffer) {
     buffer.clear();
     cout << "4" << endl;
     while (true) {
-        cout << ">[][][][][][][][]";
         header.clear();
+        cout << ">";
         while (temp[0] != '\r') {
             read_wrap(origin_sock, temp, 1, readlen);
             header += temp[0];
         }
-        cout << " header read ";
         read_wrap(origin_sock, temp, 1, readlen);
         header += temp[0];
         buffer += header;
@@ -66,14 +80,18 @@ void read_http(int origin_sock, string &buffer) {
         if (pos != string::npos) {
             string header_name = header.substr(0, pos);
             string content = header.substr(pos+1, header.length()-pos-1);
-            cout << header_name << ":" << content << endl;
+            //cout << header_name << ":" << content << endl;
             if (strcasecmp(header_name.c_str(), "content-length")==0) {
                 content_length = stoi(content);
             }
         }
     }
+    //cout << "header: " << endl << buffer << endl;
+    //int header_len =  buffer.length();
+    //cout << "content: " << endl;
     while (content_length >= 128) {
         read_wrap(origin_sock, temp, 128, readlen);
+        //cout << "read size = " << readlen << endl;
         buffer += temp;
         content_length -= 128;
     }
@@ -81,11 +99,15 @@ void read_http(int origin_sock, string &buffer) {
         read_wrap(origin_sock, temp, content_length, readlen);
         buffer += temp;
     }
+    //cout << buffer.substr(header_len, buffer.length() - header_len) << endl;
 }
 
 bool redirect_request(string buffer, struct sockaddr_in &dest_addr, int dest_socket)
 {
-  const char *new_buffer = buffer.c_str();
+  //const char *ip_str = inet_ntoa(dest_addr.sin_addr);
+  //string msg = modify_http_request(buffer, ip_str, ntohs(dest_addr.sin_port));
+  const char *new_buffer = buffer.c_str();//msg.c_str();
+  //cout << "redirected message: [" << msg << "]" << endl;
   ssize_t bytes_sent = send(dest_socket, new_buffer, strlen(new_buffer), 0);
   if (bytes_sent < 0) cout << "redirect send failed" << endl;
   return bytes_sent >= 0;
@@ -124,8 +146,22 @@ int get_server_socket(struct sockaddr_in *address, int server_port, string &host
       perror("Connection failed");
       return -1;
   }
-  
+  // bind the socket to host port
+  /*success = bind(server_socket, (struct sockaddr *)address, sizeof(*address));
+  if (success < 0)
+  {
+    //cout << "bind *&(&(*()))" << endl;
+    perror("bind failed");
+    exit(EXIT_FAILURE);
+  }*/
   printf("-----server Listening on port %d-----\n", ntohs(address->sin_port));
+
+  // try to specify maximum of 3 pending connections for the server socket
+  /*if (listen(server_socket, 3) < 0)
+  {
+    perror("listen");
+    exit(EXIT_FAILURE);
+  }*/
   return server_socket;
 }
 
@@ -188,7 +224,6 @@ int main(int argc, char *argv[])
     cerr << "Alpha must be in the range [0, 1]." << endl;
     return EXIT_FAILURE;
   }
-
   vector<int> cache;
   int proxy_socket, addrlen, activity, valread;
   int client_sockets[MAXCLIENTS] = {0};
@@ -199,6 +234,8 @@ int main(int argc, char *argv[])
   int client_sock, server_sock;
 
   struct sockaddr_in server_address, proxy_address, client_address;
+
+  //cout << ntohs(server_address.sin_port) << endl;
 
   if ((proxy_socket = socket(AF_INET, SOCK_STREAM, 0)) == 0)
   {
@@ -221,12 +258,15 @@ int main(int argc, char *argv[])
     exit(EXIT_FAILURE);
   }
 
-  char buffer[8192]; // data buffer of 1KiB + 1 bytes
+  char buffer[4096]; // data buffer of 1KiB + 1 bytes
 
+
+  // accept the incoming connection
+  addrlen = sizeof(server_address);
   puts("Waiting for connections ...");
   // set of socket descriptors
-
   fd_set readfds;
+
   while (1)
   {
     cout << "===========loop===========" << endl;
@@ -260,6 +300,7 @@ int main(int argc, char *argv[])
     //=======================================================================================
     if (FD_ISSET(proxy_socket, &readfds))
     {
+
       cout << "proxy: incoming connection" << endl;
       int new_socket = accept(proxy_socket, (struct sockaddr *)&client_address,
                               (socklen_t *)&addrlen);
@@ -301,6 +342,8 @@ int main(int argc, char *argv[])
       {
         cout << "check client[" << i << ']' << endl;
         // Check if it was for closing , and also read the
+        // incoming message
+        //getpeername(client_sock, (struct sockaddr *)&client_address, (socklen_t *)&addrlen);
         string client_message;
         //read(client_sock, buffer, 1024);client_message = buffer;
         read_http(client_sock, client_message);
@@ -335,7 +378,16 @@ int main(int argc, char *argv[])
             }
             else
             {
+              //cout << "[" << client_message << "]" << endl;
               redirect_request(client_message, server_addresses[i], server_sock);
+              // cout << send(server_socket, buffer, strlen(buffer), 0) << endl;
+              /*ssize_t bytes_sent = send(server_socket, buffer, strlen(buffer), 0);
+              if (bytes_sent < 0)
+              {
+                cout << "send data to server failed" << endl;
+                perror("send");
+                // Handle the error, possibly close the socket and clean up
+              }*/
             }
           }
           else if (client_message.substr(0, 4) == "POST")
@@ -349,6 +401,9 @@ int main(int argc, char *argv[])
             redirect_request(client_message, server_address, server_sock);
             // send(server_socket, buffer, strlen(buffer), 0);
           }
+          // printf("\n---New message---\n\n");
+          // printf("%s", buffer);
+          // printf("\nReceived from: ip %s , port %d \n", inet_ntoa(server_address.sin_addr), ntohs(server_address.sin_port));
         }
       }
       if (client_sock != 0 && server_sock!=0 && FD_ISSET(server_sock, &readfds)) {
