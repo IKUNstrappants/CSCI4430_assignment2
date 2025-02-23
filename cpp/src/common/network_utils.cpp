@@ -44,7 +44,7 @@ int get_port_number(int sockfd) {
 }
 
 int send_data(int sockfd, std::string_view bytes) {
-    size_t sent = 0;
+    ssize_t sent = 0;
     do {
         const ssize_t n =
             send(sockfd, bytes.data() + sent, bytes.size() - sent, 0);
@@ -57,7 +57,7 @@ int send_data(int sockfd, std::string_view bytes) {
 }
 
 int recv_data_until_newline(int sockfd, char *buffer) {
-    size_t total_received = 0; // total bytes received
+    ssize_t total_received = 0; // total bytes received
 
     while (total_received < MAX_MESSAGE_SIZE) {
         ssize_t n = recv(sockfd, buffer + total_received, 1, MSG_WAITALL);
