@@ -44,13 +44,13 @@ void read_wrap(int socket, char* buffer, size_t length, int &readlen) {
     readlen = read(socket, buffer, length);
     if (readlen < 0) cerr << "read on socket " << socket << "failed" << endl;
     buffer[readlen] = '\0';
-    //cout << buffer;
+    cout << buffer;
 }
 
 void read_http(int origin_sock, string &buffer) {
     char temp[129] = "";
     string header;
-    int readlen, content_length = 0;
+    int readlen = 0, content_length = 0;
     buffer.clear();
     while (readlen > 0) {
         header.clear();
@@ -332,7 +332,9 @@ int main(int argc, char *argv[])
         getpeername(client_sock, (struct sockaddr *)&client_address,
                     (socklen_t *)&addrlen);
         string client_message;
-        read_http(client_sock, client_message);
+        read(client_sock, buffer, 1024);
+        //read_http(client_sock, client_message);
+        client_message = buffer;
         cout << "[" << endl << client_message << "]" << endl;
         if (client_message.empty())
         {
