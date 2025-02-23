@@ -5,4 +5,5 @@ videoserver/static/videos/tears-of-steel.tar.gz
 build/
 __pycache__
 .venv
+.vscode
 .DS_Store
