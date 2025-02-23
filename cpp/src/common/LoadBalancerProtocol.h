@@ -34,3 +34,4 @@ struct LoadBalancerResponse {
     uint16_t videoserver_port;  // The port of the videoserver.
     uint16_t request_id;        // The request_id from the LoadBalancerRequest.
 };
+
