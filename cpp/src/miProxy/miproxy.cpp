@@ -16,78 +16,86 @@
 #include <fcntl.h>
 using namespace std;
 
-
 #define MAXCLIENTS 30
 
-void set_nonblocking(int socket) {
-    int flags = fcntl(socket, F_GETFL, 0);
-    fcntl(socket, F_SETFL, flags | O_NONBLOCK);
+void set_nonblocking(int socket)
+{
+  int flags = fcntl(socket, F_GETFL, 0);
+  fcntl(socket, F_SETFL, flags | O_NONBLOCK);
 }
 
-void read_wrap(int socket, char* buffer, size_t length, int &readlen) {
-    readlen = read(socket, buffer, length);
-    if (readlen < 0) cerr << "read on socket " << socket << "failed" << endl;
-    buffer[readlen] = '\0';
-    //cout << buffer;
+void read_wrap(int socket, char *buffer, size_t length, int &readlen)
+{
+  readlen = read(socket, buffer, length);
+  if (readlen < 0) {
+    cerr << "read on socket " << socket << " failed" << endl;
+    exit(0);
+  }
+  buffer[readlen] = '\0';
+  // cout << buffer;
 }
 
-void read_http(int origin_sock, string &buffer) {
-    if (true) {
-        char temp[8192] = "";
-        int readlen1;
-        read_wrap(origin_sock, temp, 8192, readlen1);
-        buffer = temp;
-        return ;
-    }
-    cout << "begin read_http()" << endl;
-    set_nonblocking(origin_sock);
-    cout << "0>";
-    char temp[129] = "";
-    cout << "1>";
-    string header;
-    cout << "2>";
-    int readlen = 1, content_length = 0;
-    cout << "3>";
-    buffer.clear();
-    cout << "4" << endl;
-    while (true) {
-        cout << ">[][][][][][][][]";
-        header.clear();
-        while (temp[0] != '\r') {
-            read_wrap(origin_sock, temp, 1, readlen);
-            header += temp[0];
+void read_http(int origin_sock, string &buffer)
+{
+  if (false)
+  {
+    char temp[8192] = "";
+    int readlen1;
+    read_wrap(origin_sock, temp, 8192, readlen1);
+    buffer = temp;
+    return;
+  }
+  set_nonblocking(origin_sock);
+  char temp[1024] = "";
+  string header, content;
+  int readlen = 1, content_length = 0;
+  buffer.clear();
+  cout << "run read http loop" << endl;
+  while (true)
+  {
+    read_wrap(origin_sock, temp, 1024, readlen);
+    header += temp;
+    int pos = header.find("\r\n\r\n");
+    if (pos != string::npos)
+    {
+      content = header.substr(pos + 4);
+      header = header.substr(0, pos + 4);
+      string line;
+      std::istringstream stream(header);
+      while (getline(stream, line))
+      {
+        if (line.find("Content-Length:") != string::npos)
+        {
+          size_t colon_pos = line.find(':');
+          if (colon_pos == string::npos) continue;
+          content_length = stoi(line.substr(colon_pos + 1));
         }
-        cout << " header read ";
-        read_wrap(origin_sock, temp, 1, readlen);
-        header += temp[0];
-        buffer += header;
-        if (header=="\r\n") break;
-        int pos = header.find(':');
-        if (pos != string::npos) {
-            string header_name = header.substr(0, pos);
-            string content = header.substr(pos+1, header.length()-pos-1);
-            cout << header_name << ":" << content << endl;
-            if (strcasecmp(header_name.c_str(), "content-length")==0) {
-                content_length = stoi(content);
-            }
-        }
+      }
+      break;
     }
-    while (content_length >= 128) {
-        read_wrap(origin_sock, temp, 128, readlen);
-        buffer += temp;
-        content_length -= 128;
-    }
-    if (content_length > 0) {
-        read_wrap(origin_sock, temp, content_length, readlen);
-        buffer += temp;
-    }
+  }
+  content_length -= content.length();
+  cout << "loop finish, read remaining content" << endl;
+  while (content_length >= 1024)
+  {
+    read_wrap(origin_sock, temp, 1024, readlen);
+    content += temp;
+    content_length -= 1024;
+  }
+  if (content_length > 0)
+  {
+    read_wrap(origin_sock, temp, content_length, readlen);
+    content += temp;
+  }
+  buffer = header + content;
 }
 
 bool redirect_request(string buffer, struct sockaddr_in &dest_addr, int dest_socket)
 {
   const char *new_buffer = buffer.c_str();
   ssize_t bytes_sent = send(dest_socket, new_buffer, strlen(new_buffer), 0);
-  if (bytes_sent < 0) cout << "redirect send failed" << endl;
+  if (bytes_sent < 0)
+    cout << "redirect send failed" << endl;
   return bytes_sent >= 0;
 }
 
@@ -114,17 +122,19 @@ int get_server_socket(struct sockaddr_in *address, int server_port, string &host
 
   address->sin_family = AF_INET;
   address->sin_port = htons(server_port);
-  if (inet_pton(AF_INET, hostname.c_str(), &address->sin_addr) <= 0) {
-      perror("Invalid address/ Address not supported");
-      return -1;
+  if (inet_pton(AF_INET, hostname.c_str(), &address->sin_addr) <= 0)
+  {
+    perror("Invalid address/ Address not supported");
+    return -1;
   }
 
   // Connect to the server
-  if (connect(server_socket, (struct sockaddr *)address, sizeof(*address)) < 0) {
-      perror("Connection failed");
-      return -1;
+  if (connect(server_socket, (struct sockaddr *)address, sizeof(*address)) < 0)
+  {
+    perror("Connection failed");
+    return -1;
   }
-  
+
   printf("-----server Listening on port %d-----\n", ntohs(address->sin_port));
   return server_socket;
 }
@@ -146,25 +156,25 @@ int main(int argc, char *argv[])
 
     if (result.count("help"))
     {
-      std::cout << options.help() << std::endl;
+      cout << options.help() << endl;
       return 0;
     }
 
     listen_port = result["listen-port"].as<int>();
-    hostname = result["hostname"].as<std::string>();
+    hostname = result["hostname"].as<string>();
     server_port = result["port"].as<int>();
     alpha = result["alpha"].as<float>();
 
-    std::cout << "Listen Port: " << listen_port << std::endl;
-    std::cout << "Hostname: " << hostname << std::endl;
-    std::cout << "Port: " << server_port << std::endl;
-    std::cout << "Alpha: " << alpha << std::endl;
+    cout << "Listen Port: " << listen_port << endl;
+    cout << "Hostname: " << hostname << endl;
+    cout << "Port: " << server_port << endl;
+    cout << "Alpha: " << alpha << endl;
 
     // Your proxy server implementation goes here
   }
   catch (const cxxopts::exceptions::no_such_option &e)
   {
-    std::cerr << "Error parsing options: " << e.what() << std::endl;
+    cerr << "Error parsing options: " << e.what() << endl;
     return 1;
   }
 
@@ -192,7 +202,7 @@ int main(int argc, char *argv[])
   vector<int> cache;
   int proxy_socket, addrlen, activity, valread;
   int client_sockets[MAXCLIENTS] = {0};
-  int client_states[MAXCLIENTS]  = {0};
+  int client_states[MAXCLIENTS] = {0};
   int client_servers[MAXCLIENTS] = {0};
   vector<struct sockaddr_in> client_addresses(MAXCLIENTS), server_addresses(MAXCLIENTS);
 
@@ -230,7 +240,7 @@ int main(int argc, char *argv[])
   while (1)
   {
     cout << "===========loop===========" << endl;
-    
+
     // clear the socket set
     FD_ZERO(&readfds);
 
@@ -256,7 +266,7 @@ int main(int argc, char *argv[])
       cout << "no activity present, proxy terminated" << endl;
       perror("select error");
     }
-    
+
     //=======================================================================================
     if (FD_ISSET(proxy_socket, &readfds))
     {
@@ -288,7 +298,7 @@ int main(int argc, char *argv[])
       }
     }
     cout << "proxy operations done" << endl;
-        
+
     //===============================================
     // else it's some IO operation on a client socket
     //===============================================
@@ -297,14 +307,15 @@ int main(int argc, char *argv[])
       client_sock = client_sockets[i];
       server_sock = client_servers[i];
       // Note: sd == 0 is our default here by fd 0 is actually stdin
-      if (client_sock != 0 && server_sock!=0 && FD_ISSET(client_sock, &readfds))
+      if (client_sock != 0 && server_sock != 0 && FD_ISSET(client_sock, &readfds))
       {
         cout << "check client[" << i << ']' << endl;
         // Check if it was for closing , and also read the
         string client_message;
-        //read(client_sock, buffer, 1024);client_message = buffer;
+        // read(client_sock, buffer, 1024);client_message = buffer;
         read_http(client_sock, client_message);
-        cout << "[" << endl << client_message << "]" << endl;
+        cout << "[" << endl
+             << client_message << "]" << endl;
         if (client_message.empty())
         {
           // Somebody disconnected , get their details and print
@@ -327,7 +338,6 @@ int main(int argc, char *argv[])
             cout << "{{{{{{ GET message }}}}}}" << endl;
             if (false && (client_message.substr(client_message.length() - 3, 3) == "mpd"))
             {
-              
             }
             else if (false && (client_message.substr(client_message.length() - 3, 3) == "m4s"))
             {
@@ -351,15 +361,18 @@ int main(int argc, char *argv[])
           }
         }
       }
-      if (client_sock != 0 && server_sock!=0 && FD_ISSET(server_sock, &readfds)) {
+      if (client_sock != 0 && server_sock != 0 && FD_ISSET(server_sock, &readfds))
+      {
         cout << "check server[" << i << ']' << endl;
         string server_message;
         int readlen = 0;
-        //read_wrap(server_sock, buffer, 4096, readlen);server_message = buffer;
-        read_http(server_sock,server_message);
-        cout << "server return message: " << endl << server_message << endl << "]" << endl;
+        // read_wrap(server_sock, buffer, 4096, readlen);server_message = buffer;
+        read_http(server_sock, server_message);
+        cout << "server return message: " << endl
+             << server_message << endl
+             << "]" << endl;
         send(client_sock, server_message.c_str(), server_message.length(), 0);
-        //redirect_request(server_message, client_addresses[i], client_sock);
+        // redirect_request(server_message, client_addresses[i], client_sock);
       }
     }
   }

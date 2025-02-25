@@ -1,3 +1,8 @@
 {
-    "cmake.sourceDirectory": "/Users/yangzihao/Desktop/document/CSCI4430_assignment2/cpp"
+    "cmake.sourceDirectory": "/Users/yangzihao/Desktop/document/CSCI4430_assignment2/cpp",
+    "files.associations": {
+        "*.tcc": "cpp",
+        "iosfwd": "cpp",
+        "iostream": "cpp"
+    }
 }
