@@ -60,8 +60,14 @@ ssize_t read_wrap(int socket, char *buffer, size_t length, int &readlen)
   readlen = read(socket, buffer, length);
   if (readlen < 0)
   {
-    std::cerr << "Read " << length << " bytes on socket " << socket << " failed" << std::endl;
-    return -1;
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      cout << "read 0, pass" << endl;
+      return 0; // 非错误，只是暂时无数据
+    } 
+    else {
+      cerr << "Read " << length << " bytes on socket " << socket << " failed: " << strerror(errno) << endl;
+      return -1;
+    }
   }
   //cout << "Read " << readlen << " bytes" << endl;
   buffer[readlen] = '\0';
@@ -77,7 +83,8 @@ ssize_t read_http(int socket_fd, string &response, string &client_ID)
   int readlen;
   ssize_t bytes_read, content_length = 0, pos;
 
-  while ((bytes_read = read_wrap(socket_fd, temp, sizeof(temp), readlen)) > 0) {
+  while ((bytes_read = read_wrap(socket_fd, temp, sizeof(temp), readlen)) >= 0) {
+    if (bytes_read==0) continue;
     buffer.append(temp, readlen);
     pos = buffer.find("\r\n\r\n");
     if (pos != std::string::npos) {
@@ -359,9 +366,9 @@ int main(int argc, char *argv[])
         // Check if it was for closing , and also read the
         string client_message, client_ID;
         // read(client_sock, buffer, 1024);client_message = buffer;
-        read_http(client_sock, client_message, client_ID);
+        ssize_t result = read_http(client_sock, client_message, client_ID);
         //cout << "[" << endl << client_message << "]" << endl;
-        if (client_message.empty())
+        if (result == -1)
         {
           spdlog::info("Client socket sockfd {} disconnected", client_sock); 
           // Somebody disconnected , get their details and print
@@ -372,9 +379,9 @@ int main(int argc, char *argv[])
           client_sockets[i] = 0;
           close(server_sock);
           client_servers[i] = 0;
-        }
-        else
-        {
+        } else if (result == 0) {
+
+        } else {
           cache.push_back(i);
           // send the same message back to the client, hence why it's called
           // "echo_server"
