@@ -14,6 +14,7 @@
 #include <cxxopts.hpp>
 #include <pugixml.hpp>
 #include <fcntl.h>
+#include "spdlog/spdlog.h"
 using namespace std;
 
 #define MAXCLIENTS 30
@@ -67,8 +68,9 @@ ssize_t read_wrap(int socket, char *buffer, size_t length, int &readlen)
   return readlen;
 }
 
-ssize_t read_http(int socket_fd, std::string &response)
+ssize_t read_http(int socket_fd, string &response, string &client_ID)
 {
+  client_ID.clear();
   set_nonblocking(socket_fd);
   string buffer, header, content;
   char temp[4096];
@@ -94,13 +96,15 @@ ssize_t read_http(int socket_fd, std::string &response)
           string value = line.substr(colon_pos + 2); // 跳过 ": "
           if (strcasecmp(key.c_str(), "Content-Length")==0)
           {
-            //cout << "content-length found: [" << line.substr(0, line.length() - 1) << "]" << endl;
             try {
               content_length = stoul(value);
             }
             catch (const invalid_argument &) {
               cerr << "Invalid Content-Length" << std::endl;
             }
+          }
+          else if (strcasecmp(key.c_str(), "X-489-UUID")==0) {
+            client_ID = value;
           }
         }
       }
@@ -172,7 +176,7 @@ int get_server_socket(struct sockaddr_in *address, int server_port, string &host
     return -1;
   }
 
-  printf("-----server Listening on port %d-----\n", ntohs(address->sin_port));
+  //printf("-----server Listening on port %d-----\n", ntohs(address->sin_port));
   return server_socket;
 }
 
@@ -237,8 +241,9 @@ int main(int argc, char *argv[])
   }
 
   vector<int> cache;
-  vector<vector<int>> bitrate(20);
+  map<string, vector<int>> bandwidths;
   vector<string> request_cache(20);
+  map<string, double> throughput_cache;
   int proxy_socket, addrlen, activity, valread;
   int client_sockets[MAXCLIENTS] = {0};
   int client_states[MAXCLIENTS] = {0};
@@ -269,7 +274,7 @@ int main(int argc, char *argv[])
     close(proxy_socket);
     exit(EXIT_FAILURE);
   }
-
+  spdlog::info("miProxy started");
   char buffer[8192]; // data buffer of 1KiB + 1 bytes
 
   puts("Waiting for connections ...");
@@ -278,7 +283,7 @@ int main(int argc, char *argv[])
   fd_set readfds;
   while (1)
   {
-    cout << "===========loop===========" << endl;
+    //cout << "===========loop===========" << endl;
 
     // clear the socket set
     FD_ZERO(&readfds);
@@ -302,7 +307,7 @@ int main(int argc, char *argv[])
     // cout << "select finish" << endl;
     if ((activity < 0) && (errno != EINTR))
     {
-      cout << "no activity present, proxy terminated" << endl;
+      //cout << "no activity present, proxy terminated" << endl;
       perror("select error");
     }
 
@@ -317,11 +322,11 @@ int main(int argc, char *argv[])
         perror("accept");
         exit(EXIT_FAILURE);
       }
+      spdlog::info("New client socket connected with {}:{} on sockfd {}", inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port), new_socket);
 
       // inform user of socket number - used in send and receive commands
-      printf("\n---New client connection---\n");
-      printf("socket fd is %d , ip is : %s , port : %d \n", new_socket,
-             inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port));
+      //printf("\n---New client connection---\n");
+      //printf("socket fd is %d , ip is : %s , port : %d \n", new_socket, inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port));
 
       //  add new socket to the array of sockets
       for (int i = 0; i < MAXCLIENTS && client_sockets[i] != new_socket; i++)
@@ -332,6 +337,8 @@ int main(int argc, char *argv[])
           client_sockets[i] = new_socket;
           client_servers[i] = get_server_socket(&server_addresses[i], server_port, hostname);
           client_addresses[i] = client_address;
+          set_nonblocking(client_sockets[i]);
+          set_nonblocking(client_servers[i]);
           break;
         }
       }
@@ -348,18 +355,18 @@ int main(int argc, char *argv[])
       // Note: sd == 0 is our default here by fd 0 is actually stdin
       if (client_sock != 0 && server_sock != 0 && FD_ISSET(client_sock, &readfds))
       {
-        cout << "check client[" << i << ']' << endl;
+        //cout << "check client[" << i << ']' << endl;
         // Check if it was for closing , and also read the
-        string client_message;
+        string client_message, client_ID;
         // read(client_sock, buffer, 1024);client_message = buffer;
-        read_http(client_sock, client_message);
+        read_http(client_sock, client_message, client_ID);
         //cout << "[" << endl << client_message << "]" << endl;
         if (client_message.empty())
         {
+          spdlog::info("Client socket sockfd {} disconnected", client_sock); 
           // Somebody disconnected , get their details and print
-          printf("\n---client disconnected---\n");
-          printf("client disconnected , ip %s , port %d \n",
-                 inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port));
+          //printf("\n---client disconnected---\n");
+          //printf("client disconnected , ip %s , port %d \n", inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port));
           // Close the socket and mark as 0 in list for reuse
           close(client_sock);
           client_sockets[i] = 0;
@@ -373,20 +380,23 @@ int main(int argc, char *argv[])
           // "echo_server"
           if (client_message.substr(0, 3) == "GET")
           {
-            cout << "{{{{{{ GET message }}}}}}" << endl;
+            //cout << "{{{{{{ GET message }}}}}}" << endl;
             size_t pos;
             if ((pos = client_message.find("HTTP")) != string::npos)
             {
               string file_addr = client_message.substr(4, pos - 5);
-              cout << "file_addr: " << file_addr << endl;
-              
+              //cout << "file_addr: " << file_addr << endl;
+
               if (file_addr.length() >= 7 && file_addr.substr(file_addr.length() - 7, 7) == "vid.mpd")
               {
+                
                 send_message(server_sock, client_message);
                 client_states[i] = 1;
                 string file_addr_mod = file_addr.substr(0, file_addr.length() - 4).append("-no-list.mpd");
-                cout << "modified addr: " << file_addr_mod << endl;
-                cout << "modified request: " << string("GET ") + file_addr_mod + client_message.substr(pos - 1) << endl;
+                
+                spdlog::info("Manifest requested by {} forwarded to {}:{} for {}", client_ID, inet_ntoa(server_addresses[i].sin_addr), ntohs(server_addresses[i].sin_port), file_addr_mod); 
+                //cout << "modified addr: " << file_addr_mod << endl;
+                //cout << "modified request: " << string("GET ") + file_addr_mod + client_message.substr(pos - 1) << endl;
                 request_cache[i] = string("GET ") + file_addr_mod + client_message.substr(pos - 1);
                 // send_message(server_sock, string("GET ") + file_addr_mod + client_message.substr(pos - 1));
               }
@@ -412,8 +422,19 @@ int main(int argc, char *argv[])
                           flag = 1;
                 }}}}}
                 if (flag) {
-                  string file_addr_mod = file_addr.substr(0, pos_b+5) + to_string(800) + file_addr.substr(pos_d);
+                  //cout << "select bandwidth" << endl;
+                  if (throughput_cache.find(client_ID) == throughput_cache.end()) {
+                    throughput_cache[client_ID] = 0.0;
+                  }
+                  /*if (bandwidths.find(client_ID) == bandwidths.end()) {
+                    cout << "bandwidth for client_ID not found" << endl;
+                  }*/
+                  int j = bandwidths[client_ID].size();
+                  while (j > 0 && bandwidths[client_ID][--j] > throughput_cache[client_ID] * 1.5);
+                  //cout << "current bandwidth: " << bandwidths[client_ID][j] << ", throughput: " << throughput_cache[client_ID] << endl;
+                  string file_addr_mod = file_addr.substr(0, pos_b+5) + to_string(bandwidths[client_ID][j]) + file_addr.substr(pos_d);
                   //cout <<"modified message: " << string("GET ") + file_addr_mod + client_message.substr(pos - 1) << endl;
+                  spdlog::info("Segment requested by {} forwarded to {}:{} as {} at bitrate {} Kbps", client_ID, inet_ntoa(server_addresses[i].sin_addr), ntohs(server_addresses[i].sin_port), file_addr_mod, bandwidths[client_ID][j]); 
                   send_message(server_sock, string("GET ") + file_addr_mod + client_message.substr(pos - 1));
                 }
                 else {
@@ -432,9 +453,34 @@ int main(int argc, char *argv[])
           }
           else if (client_message.substr(0, 4) == "POST")
           {
-            cout << "{{{{{{ POST message }}}}}}" << endl;
-            //send_message(server_sock, client_message);
-            // send(server_socket, buffer, strlen(buffer), 0);
+            //cout << "{{{{{{ POST message }}}}}}" << endl;
+            //cout << client_message << endl;
+            int frag_size = 0, time_start = 0, time_end = 0;
+            istringstream header_stream(client_message);
+            string line;
+            while (getline(header_stream, line) && line != "\r") {
+              size_t colon_pos = line.find(':');
+              if (colon_pos != string::npos) {
+                string key = line.substr(0, colon_pos);
+                string value = line.substr(colon_pos + 2); // 跳过 ": "
+                if (strcasecmp(key.c_str(), "x-fragment-size")==0){
+                  frag_size = stoul(value);
+                }
+                else if (strcasecmp(key.c_str(), "x-timestamp-start")==0) {
+                  time_start = stoul(value);
+                }
+                else if (strcasecmp(key.c_str(), "x-timestamp-end")==0) {
+                  time_end = stoul(value);
+                }
+              }
+            }
+            double throughput = (double)frag_size / (time_end - time_start);
+            if (throughput_cache.find(client_ID) == throughput_cache.end()) {
+              throughput_cache[client_ID] = 0;
+            }
+            throughput_cache[client_ID] = alpha * throughput + (1 - alpha) * throughput_cache[client_ID];
+            spdlog::info("Client {} finished receiving a segment of size {} bytes in {} ms. Throughput: {} Kbps. Avg Throughput: {} Kbps", client_ID, frag_size, time_end - time_start, throughput, throughput_cache[client_ID]); 
+            send_message(client_sock, string("HTTP/1.1 200 OK\r\n\r\n"));
           }
           else
           {
@@ -445,13 +491,14 @@ int main(int argc, char *argv[])
       }
       if (client_sock != 0 && server_sock != 0 && FD_ISSET(server_sock, &readfds))
       {
-        cout << "check server[" << i << ']' << endl;
+        //cout << "check server[" << i << ']' << endl;
+        string temp;
         string server_message;
         int readlen = 0;
         // read_wrap(server_sock, buffer, 4096, readlen);server_message = buffer;
         if (client_states[i] == 0)
         {
-          read_http(server_sock, server_message);
+          read_http(server_sock, server_message, temp);
           send_message(client_sock, server_message);
         }
         else if (client_states[i] == 1)
@@ -460,14 +507,36 @@ int main(int argc, char *argv[])
           // read_http(server_sock, server_message);
           // cout << server_message << endl;
           server_message.clear();
-          read_http(server_sock, server_message);
-          size_t content_pos = server_message.find("\r\n\r\n");
-          if (content_pos != string::npos) {
-            bitrate[i] = get_available_bandwidths(server_message.substr(content_pos + 4));
+          read_http(server_sock, server_message, temp);
+          size_t content_pos = server_message.find("\r\n\r\n"), content_pos_2 = request_cache[i].find("\r\n\r\n");
+          istringstream header_stream(request_cache[i].substr(0, content_pos_2));
+          string line, client_ID;
+          //cout << header_stream.str()<< endl;
+          while (getline(header_stream, line) && line != "\r") {
+            size_t colon_pos = line.find(':');
+            //cout << "[" << line.substr(0, line.length()-1) << "]" << endl;
+            if (colon_pos != string::npos) {
+              //cout << "[" << line.substr(0, line.length()-1) << "]" << endl;
+              string key = line.substr(0, colon_pos);
+              string value = line.substr(colon_pos + 2); // 跳过 ": "
+              if (strcasecmp(key.c_str(), "X-489-UUID")==0) {
+                client_ID = value;
+              }
+            }
+          }
+          //cout << "client_ID=" << client_ID << endl;
+          if (!client_ID.empty() && content_pos != string::npos) {
+            bandwidths[client_ID] = get_available_bandwidths(server_message.substr(content_pos + 4));
+            sort(bandwidths[client_ID].begin(), bandwidths[client_ID].end());
+            /*cout << "bandwidths: ";
+            for(int j = 0; j < bandwidths[client_ID].size(); j++) {
+              cout << bandwidths[client_ID][j] << ' ';
+            }
+            cout << endl;*/
           }
           send_message(server_sock, request_cache[i]);
           request_cache[i].clear();
-          cout << server_message << endl;
+          //cout << server_message << endl;
         }
         //cout << "server return message: " << server_message << endl;
         // redirect_request(server_message, client_addresses[i], client_sock);
