@@ -29,6 +29,31 @@ void send_message(int socket, string message)
   send(socket, message.c_str(), message.length(), 0);
 }
 
+vector<int> get_available_bandwidths(const string& xml_content) {
+  vector<int> bandwidths;
+  pugi::xml_document doc;
+
+  // 加载 XML 内容
+  pugi::xml_parse_result result = doc.load_string(xml_content.c_str());
+  if (!result) {
+      std::cerr << "XML 解析失败: " << result.description() << std::endl;
+      return bandwidths;
+  }
+
+  // 使用 XPath 查询所有 Representation 节点
+  pugi::xpath_node_set representations = doc.select_nodes("//Representation");
+
+  // 提取 bandwidth 属性值
+  for (const auto& node : representations) {
+      pugi::xml_attribute bandwidth_attr = node.node().attribute("bandwidth");
+      if (bandwidth_attr) {
+          bandwidths.push_back(bandwidth_attr.as_int());
+      }
+  }
+
+  return bandwidths;
+}
+
 ssize_t read_wrap(int socket, char *buffer, size_t length, int &readlen)
 {
   readlen = read(socket, buffer, length);
@@ -37,7 +62,7 @@ ssize_t read_wrap(int socket, char *buffer, size_t length, int &readlen)
     std::cerr << "Read " << length << " bytes on socket " << socket << " failed" << std::endl;
     return -1;
   }
-  std::cout << "Read " << readlen << " bytes" << std::endl;
+  //cout << "Read " << readlen << " bytes" << endl;
   buffer[readlen] = '\0';
   return readlen;
 }
@@ -212,7 +237,8 @@ int main(int argc, char *argv[])
   }
 
   vector<int> cache;
-  vector<string> request_cache(20), socket_bitrates(20);
+  vector<vector<int>> bitrate(20);
+  vector<string> request_cache(20);
   int proxy_socket, addrlen, activity, valread;
   int client_sockets[MAXCLIENTS] = {0};
   int client_states[MAXCLIENTS] = {0};
@@ -327,8 +353,7 @@ int main(int argc, char *argv[])
         string client_message;
         // read(client_sock, buffer, 1024);client_message = buffer;
         read_http(client_sock, client_message);
-        cout << "[" << endl
-             << client_message << "]" << endl;
+        //cout << "[" << endl << client_message << "]" << endl;
         if (client_message.empty())
         {
           // Somebody disconnected , get their details and print
@@ -354,6 +379,7 @@ int main(int argc, char *argv[])
             {
               string file_addr = client_message.substr(4, pos - 5);
               cout << "file_addr: " << file_addr << endl;
+              
               if (file_addr.length() >= 7 && file_addr.substr(file_addr.length() - 7, 7) == "vid.mpd")
               {
                 send_message(server_sock, client_message);
@@ -364,9 +390,35 @@ int main(int argc, char *argv[])
                 request_cache[i] = string("GET ") + file_addr_mod + client_message.substr(pos - 1);
                 // send_message(server_sock, string("GET ") + file_addr_mod + client_message.substr(pos - 1));
               }
-              else if (false && (client_message.substr(client_message.length() - 3, 3) == "m4s"))
+
+              else if (file_addr.length() >= 5 && file_addr.substr(file_addr.length() - 4, 4) == ".m4s") 
               {
-                send_message(server_sock, client_message);
+                // [PATH-TO-VIDEO] /video  /vid   -[BITRATE] -seg-[NUMBER].m4s
+                //                 |       |      |          |
+                //                 pos_a   pos_b  pos_b+4    pos_d
+                size_t pos_a = string::npos, pos_b = file_addr.rfind('/'), pos_c = string::npos, pos_d = string::npos;
+                int flag = 0;
+                if (pos_b != string::npos) {
+                  //cout << pos_b << endl;
+                  pos_a = file_addr.substr(0, pos_b).rfind('/');
+                  //cout << pos_a << ", " << pos_b << endl;
+                  if (pos_a != string::npos) {
+                    //cout << pos_a << ", " << pos_b << endl;
+                    if (file_addr.substr(pos_a, 6)=="/video") {
+                      pos_d = file_addr.substr(pos_b).find("-seg-");
+                      if (pos_d != string::npos) {
+                        pos_d += pos_b;
+                        if (file_addr[pos_b+4]=='-') {
+                          flag = 1;
+                }}}}}
+                if (flag) {
+                  string file_addr_mod = file_addr.substr(0, pos_b+5) + to_string(800) + file_addr.substr(pos_d);
+                  //cout <<"modified message: " << string("GET ") + file_addr_mod + client_message.substr(pos - 1) << endl;
+                  send_message(server_sock, string("GET ") + file_addr_mod + client_message.substr(pos - 1));
+                }
+                else {
+                  send_message(server_sock, client_message);
+                }
               }
               else
               {
@@ -409,14 +461,15 @@ int main(int argc, char *argv[])
           // cout << server_message << endl;
           server_message.clear();
           read_http(server_sock, server_message);
-          socket_bitrates[i] = server_message;
+          size_t content_pos = server_message.find("\r\n\r\n");
+          if (content_pos != string::npos) {
+            bitrate[i] = get_available_bandwidths(server_message.substr(content_pos + 4));
+          }
           send_message(server_sock, request_cache[i]);
           request_cache[i].clear();
           cout << server_message << endl;
         }
-        cout << "server return message: [" << endl
-             << server_message << endl
-             << "]" << endl;
+        //cout << "server return message: " << server_message << endl;
         // redirect_request(server_message, client_addresses[i], client_sock);
       }
     }
