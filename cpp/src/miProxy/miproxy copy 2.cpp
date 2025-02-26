@@ -24,82 +24,89 @@ void set_nonblocking(int socket)
   fcntl(socket, F_SETFL, flags | O_NONBLOCK);
 }
 
-void send_message(int socket, string message)
-{
+void send_message(int socket, string message) {
   send(socket, message.c_str(), message.length(), 0);
 }
 
-ssize_t read_wrap(int socket, char *buffer, size_t length, int &readlen)
+int read_wrap(int socket, char *buffer, size_t length, int &readlen)
 {
   readlen = read(socket, buffer, length);
-  if (readlen < 0)
-  {
-    std::cerr << "Read " << length << " bytes on socket " << socket << " failed" << std::endl;
+  cout << "read " << readlen << " bytes" << endl;
+  if (readlen < 0) {
+    cerr << "read " << length << " bytes on socket " << socket << " failed" << endl;
     return -1;
   }
-  std::cout << "Read " << readlen << " bytes" << std::endl;
   buffer[readlen] = '\0';
-  return readlen;
+  return strlen(buffer);
+  // cout << buffer;
 }
 
-ssize_t read_http(int socket_fd, std::string &response)
+void read_http(int origin_sock, string &buffer)
 {
-  set_nonblocking(socket_fd);
-  string buffer, header, content;
-  char temp[4096];
-  int readlen;
-  ssize_t bytes_read, content_length = 0, pos;
-
-  while ((bytes_read = read_wrap(socket_fd, temp, sizeof(temp), readlen)) > 0) {
-    buffer.append(temp, readlen);
-    pos = buffer.find("\r\n\r\n");
-    if (pos != std::string::npos) {
-      header = buffer.substr(0, pos + 4); // 跳过 "\r\n\r\n"
-      //cout << "header: " << header << endl;
-      response = header;
-      content = buffer.substr(pos + 4);
-      buffer.clear(); 
-      // 解析头部
-      istringstream header_stream(header);
+  if (false)
+  {
+    char temp[8192] = "";
+    int readlen1;
+    read_wrap(origin_sock, temp, 8192, readlen1);
+    buffer = temp;
+    return;
+  }
+  set_nonblocking(origin_sock);
+  char temp[1024] = "";
+  string header, content;
+  int readlen = 1, content_length = 0;
+  buffer.clear();
+  //cout << "run read http loop" << endl;
+  while (true)
+  {
+    int length_read = read_wrap(origin_sock, temp, 1024, readlen);
+    //cout << "readlen = " << readlen << endl;
+    header.append(temp);
+    size_t pos = header.find("\r\n\r\n");
+    //cout << "pos = " << pos << endl;
+    if (pos == string::npos) continue;
+    else {
+      pos += 4;
+      cout << "end of header reached, last readlen=" << readlen << endl;
+      if (readlen < 1024 || pos == header.length()) {
+        break;
+      }
+      cout << "header.length()=" << header.length() << ", pos=" << pos << endl;
+      content = header.substr(pos);
+      header = header.substr(0, pos);
       string line;
-      while (getline(header_stream, line) && line != "\r") {
+      istringstream stream(header);
+      while (getline(stream, line) && (line != "\r"))
+      {
+        cout << "[ " << line.substr(0, line.length() - 1) << " ]" << endl;
         size_t colon_pos = line.find(':');
+        //cout << line.substr(0, colon_pos) << endl;
         if (colon_pos != string::npos) {
-          string key = line.substr(0, colon_pos);
-          string value = line.substr(colon_pos + 2); // 跳过 ": "
-          if (strcasecmp(key.c_str(), "Content-Length")==0)
+          if (colon_pos==16 && strcasecmp(line.substr(0, colon_pos).c_str(), "Content-Length")==0)
           {
-            //cout << "content-length found: [" << line.substr(0, line.length() - 1) << "]" << endl;
-            try {
-              content_length = stoul(value);
-            }
-            catch (const invalid_argument &) {
-              cerr << "Invalid Content-Length" << std::endl;
-            }
+            content_length = stoul(line.substr(colon_pos + 2));
+            cout << "content-length=" << content_length << endl;
+            break;
           }
         }
       }
       break;
     }
   }
-  if (bytes_read < 0)
+  content_length -= content.length() - 1;
+  cout << "loop finish, read remaining content" << endl;
+  while (content_length >= 1024)
   {
-    // 处理读取错误
-    return -1;
+    read_wrap(origin_sock, temp, 1024, readlen);
+    content.append(temp);
+    content_length -= 1024;
   }
-  // 读取剩余内容
   if (content_length > 0)
   {
-    while (content.length() < content_length)
-    {
-      bytes_read = read_wrap(socket_fd, temp, min(sizeof(temp), static_cast<size_t>(content_length - content.length())), readlen);
-      if (bytes_read <= 0)
-        break;
-      content.append(temp, readlen);
-    }
-    response.append(content);
+    read_wrap(origin_sock, temp, content_length, readlen);
+    content.append(temp);
   }
-  return bytes_read;
+  buffer = header + content;
 }
 
 bool redirect_request(string buffer, struct sockaddr_in &dest_addr, int dest_socket)
@@ -269,11 +276,11 @@ int main(int argc, char *argv[])
         FD_SET(server_sock, &readfds);
       }
     }
-    // cout << "added client sockets to readfds" << endl;
-    //  wait for an activity on one of the sockets , timeout is NULL ,
-    //  so wait indefinitely
+    //cout << "added client sockets to readfds" << endl;
+    // wait for an activity on one of the sockets , timeout is NULL ,
+    // so wait indefinitely
     activity = select(FD_SETSIZE, &readfds, nullptr, nullptr, nullptr);
-    // cout << "select finish" << endl;
+    //cout << "select finish" << endl;
     if ((activity < 0) && (errno != EINTR))
     {
       cout << "no activity present, proxy terminated" << endl;
@@ -283,7 +290,7 @@ int main(int argc, char *argv[])
     //=======================================================================================
     if (FD_ISSET(proxy_socket, &readfds))
     {
-      // cout << "proxy: incoming connection" << endl;
+      //cout << "proxy: incoming connection" << endl;
       int new_socket = accept(proxy_socket, (struct sockaddr *)&client_address,
                               (socklen_t *)&addrlen);
       if (new_socket < 0)
@@ -310,7 +317,7 @@ int main(int argc, char *argv[])
         }
       }
     }
-    // cout << "proxy operations done" << endl;
+    //cout << "proxy operations done" << endl;
 
     //===============================================
     // else it's some IO operation on a client socket
@@ -350,19 +357,18 @@ int main(int argc, char *argv[])
           {
             cout << "{{{{{{ GET message }}}}}}" << endl;
             size_t pos;
-            if ((pos = client_message.find("HTTP")) != string::npos)
-            {
+            if ((pos = client_message.find("HTTP")) != string::npos) {
               string file_addr = client_message.substr(4, pos - 5);
               cout << "file_addr: " << file_addr << endl;
-              if (file_addr.length() >= 7 && file_addr.substr(file_addr.length() - 7, 7) == "vid.mpd")
+              if (file_addr.length() >= 7 && file_addr.substr(file_addr.length()-7, 7) == "vid.mpd")
               {
                 send_message(server_sock, client_message);
                 client_states[i] = 1;
-                string file_addr_mod = file_addr.substr(0, file_addr.length() - 4).append("-no-list.mpd");
+                string file_addr_mod = file_addr.substr(0, file_addr.length()-4).append("-no-list.mpd");
                 cout << "modified addr: " << file_addr_mod << endl;
                 cout << "modified request: " << string("GET ") + file_addr_mod + client_message.substr(pos - 1) << endl;
                 request_cache[i] = string("GET ") + file_addr_mod + client_message.substr(pos - 1);
-                // send_message(server_sock, string("GET ") + file_addr_mod + client_message.substr(pos - 1));
+                //send_message(server_sock, string("GET ") + file_addr_mod + client_message.substr(pos - 1));
               }
               else if (false && (client_message.substr(client_message.length() - 3, 3) == "m4s"))
               {
@@ -373,15 +379,14 @@ int main(int argc, char *argv[])
                 send_message(server_sock, client_message);
               }
             }
-            else
-            {
+            else {
               send_message(server_sock, client_message);
             }
           }
           else if (client_message.substr(0, 4) == "POST")
           {
             cout << "{{{{{{ POST message }}}}}}" << endl;
-            //send_message(server_sock, client_message);
+            send_message(server_sock, client_message);
             // send(server_socket, buffer, strlen(buffer), 0);
           }
           else
@@ -397,16 +402,14 @@ int main(int argc, char *argv[])
         string server_message;
         int readlen = 0;
         // read_wrap(server_sock, buffer, 4096, readlen);server_message = buffer;
-        if (client_states[i] == 0)
-        {
+        if (client_states[i]==0) {
           read_http(server_sock, server_message);
           send_message(client_sock, server_message);
         }
-        else if (client_states[i] == 1)
-        {
+        else if (client_states[i]==1) {
           client_states[i] = 0;
-          // read_http(server_sock, server_message);
-          // cout << server_message << endl;
+          //read_http(server_sock, server_message);
+          //cout << server_message << endl;
           server_message.clear();
           read_http(server_sock, server_message);
           socket_bitrates[i] = server_message;
