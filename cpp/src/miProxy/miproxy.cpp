@@ -52,7 +52,7 @@ vector<int> get_available_bandwidths(const string& xml_content) {
           bandwidths.push_back(bandwidth_attr.as_int());
       }
   }
-
+  sort(bandwidths.begin(), bandwidths.end());
   return bandwidths;
 }
 
@@ -426,12 +426,18 @@ int main(int argc, char *argv[])
                   /*if (bandwidths.find(client_ID) == bandwidths.end()) {
                     cout << "bandwidth for client_ID not found" << endl;
                   }*/
-                  int j = bandwidths[client_ID].size();
-                  while (j > 0 && bandwidths[client_ID][--j] > throughput_cache[client_ID] * 1.5);
+                  int selected_bw = bandwidths[client_ID].front(); // 默认最小带宽
+                  for (int bw : bandwidths[client_ID]) {
+                      if (bw <= throughput_cache[client_ID] * 1.5) {
+                          selected_bw = bw; // 遍历升序列表，最终选中最大的可用值
+                      } else {
+                          break;
+                      }
+                  }
                   //cout << "current bandwidth: " << bandwidths[client_ID][j] << ", throughput: " << throughput_cache[client_ID] << endl;
-                  string file_addr_mod = file_addr.substr(0, pos_b+5) + to_string(bandwidths[client_ID][j]) + file_addr.substr(pos_d);
+                  string file_addr_mod = file_addr.substr(0, pos_b+5) + to_string(selected_bw) + file_addr.substr(pos_d);
                   //cout <<"modified message: " << string("GET ") + file_addr_mod + client_message.substr(pos - 1) << endl;
-                  spdlog::info("Segment requested by {} forwarded to {}:{} as {} at bitrate {} Kbps", client_ID, inet_ntoa(server_addresses[i].sin_addr), ntohs(server_addresses[i].sin_port), file_addr_mod, bandwidths[client_ID][j]); 
+                  spdlog::info("Segment requested by {} forwarded to {}:{} as {} at bitrate {} Kbps", client_ID, inet_ntoa(server_addresses[i].sin_addr), ntohs(server_addresses[i].sin_port), file_addr_mod, selected_bw); 
                   send_message(server_sock, string("GET ") + file_addr_mod + client_message.substr(pos - 1));
                 }
                 else {
@@ -536,7 +542,6 @@ int main(int argc, char *argv[])
           //cout << "client_ID=" << client_ID << endl;
           if (!client_ID.empty() && content_pos != string::npos) {
             bandwidths[client_ID] = get_available_bandwidths(server_message.substr(content_pos + 4));
-            sort(bandwidths[client_ID].begin(), bandwidths[client_ID].end());
             /*cout << "bandwidths: ";
             for(int j = 0; j < bandwidths[client_ID].size(); j++) {
               cout << bandwidths[client_ID][j] << ' ';
