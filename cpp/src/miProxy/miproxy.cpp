@@ -34,17 +34,18 @@ vector<int> get_available_bandwidths(const string& xml_content) {
   vector<int> bandwidths;
   pugi::xml_document doc;
 
-  // 加载 XML 内容
   pugi::xml_parse_result result = doc.load_string(xml_content.c_str());
   if (!result) {
       std::cerr << "XML 解析失败: " << result.description() << std::endl;
       return bandwidths;
   }
 
-  // 使用 XPath 查询所有 Representation 节点
-  pugi::xpath_node_set representations = doc.select_nodes("//Representation");
+  // 修改点：使用精确的XPath过滤视频轨道
+  pugi::xpath_node_set representations = doc.select_nodes(
+      "//AdaptationSet[@mimeType='video/mp4']/Representation" // 只选择视频轨道
+  );
 
-  // 提取 bandwidth 属性值
+  // 提取 bandwidth 属性值（原有逻辑不变）
   for (const auto& node : representations) {
       pugi::xml_attribute bandwidth_attr = node.node().attribute("bandwidth");
       if (bandwidth_attr) {
@@ -61,7 +62,7 @@ ssize_t read_wrap(int socket, char *buffer, size_t length, int &readlen)
   if (readlen < 0)
   {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      cout << "read 0, pass" << endl;
+      //cout << "read 0, pass" << endl;
       return 0; // 非错误，只是暂时无数据
     } 
     else {
@@ -83,8 +84,7 @@ ssize_t read_http(int socket_fd, string &response, string &client_ID)
   int readlen;
   ssize_t bytes_read, content_length = 0, pos;
 
-  while ((bytes_read = read_wrap(socket_fd, temp, sizeof(temp), readlen)) >= 0) {
-    if (bytes_read==0) continue;
+  while ((bytes_read = read_wrap(socket_fd, temp, sizeof(temp), readlen)) > 0) {
     buffer.append(temp, readlen);
     pos = buffer.find("\r\n\r\n");
     if (pos != std::string::npos) {
@@ -136,15 +136,6 @@ ssize_t read_http(int socket_fd, string &response, string &client_ID)
     response.append(content);
   }
   return bytes_read;
-}
-
-bool redirect_request(string buffer, struct sockaddr_in &dest_addr, int dest_socket)
-{
-  const char *new_buffer = buffer.c_str();
-  ssize_t bytes_sent = send(dest_socket, new_buffer, strlen(new_buffer), 0);
-  if (bytes_sent < 0)
-    cout << "redirect send failed" << endl;
-  return bytes_sent >= 0;
 }
 
 int get_server_socket(struct sockaddr_in *address, int server_port, string &hostname)
@@ -204,7 +195,7 @@ int main(int argc, char *argv[])
 
     if (result.count("help"))
     {
-      cout << options.help() << endl;
+      //cout << options.help() << endl;
       return 0;
     }
 
@@ -213,10 +204,10 @@ int main(int argc, char *argv[])
     server_port = result["port"].as<int>();
     alpha = result["alpha"].as<float>();
 
-    cout << "Listen Port: " << listen_port << endl;
-    cout << "Hostname: " << hostname << endl;
-    cout << "Port: " << server_port << endl;
-    cout << "Alpha: " << alpha << endl;
+    //cout << "Listen Port: " << listen_port << endl;
+    //cout << "Hostname: " << hostname << endl;
+    //cout << "Port: " << server_port << endl;
+    //cout << "Alpha: " << alpha << endl;
 
     // Your proxy server implementation goes here
   }
@@ -284,7 +275,7 @@ int main(int argc, char *argv[])
   spdlog::info("miProxy started");
   char buffer[8192]; // data buffer of 1KiB + 1 bytes
 
-  puts("Waiting for connections ...");
+  //puts("Waiting for connections ...");
   // set of socket descriptors
 
   fd_set readfds;
@@ -365,10 +356,9 @@ int main(int argc, char *argv[])
         //cout << "check client[" << i << ']' << endl;
         // Check if it was for closing , and also read the
         string client_message, client_ID;
-        // read(client_sock, buffer, 1024);client_message = buffer;
         ssize_t result = read_http(client_sock, client_message, client_ID);
         //cout << "[" << endl << client_message << "]" << endl;
-        if (result == -1)
+        if (result <= 0)
         {
           spdlog::info("Client socket sockfd {} disconnected", client_sock); 
           // Somebody disconnected , get their details and print
@@ -380,7 +370,7 @@ int main(int argc, char *argv[])
           close(server_sock);
           client_servers[i] = 0;
         } else if (result == 0) {
-
+          //cout << "pass" << endl;
         } else {
           cache.push_back(i);
           // send the same message back to the client, hence why it's called
@@ -481,13 +471,25 @@ int main(int argc, char *argv[])
                 }
               }
             }
-            double throughput = (double)frag_size / (time_end - time_start);
+            /*double throughput = (double)frag_size / (time_end - time_start);
             if (throughput_cache.find(client_ID) == throughput_cache.end()) {
               throughput_cache[client_ID] = 0;
+              
             }
             throughput_cache[client_ID] = alpha * throughput + (1 - alpha) * throughput_cache[client_ID];
             spdlog::info("Client {} finished receiving a segment of size {} bytes in {} ms. Throughput: {} Kbps. Avg Throughput: {} Kbps", client_ID, frag_size, time_end - time_start, throughput, throughput_cache[client_ID]); 
-            send_message(client_sock, string("HTTP/1.1 200 OK\r\n\r\n"));
+            send_message(client_sock, string("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"));
+            */
+            if (time_end <= time_start) {
+              spdlog::error("Invalid timestamps from client {}", client_ID);
+            } else {
+                double time_diff_ms = time_end - time_start;
+                double throughput_kbps = (frag_size * 8.0) / (time_diff_ms); // 转换为Kbps
+                throughput_cache[client_ID] = alpha * throughput_kbps + (1 - alpha) * throughput_cache[client_ID];
+                //spdlog::info("Updated throughput for {}: {} Kbps", client_ID, throughput_cache[client_ID]);
+                spdlog::info("Client {} finished receiving a segment of size {} bytes in {} ms. Throughput: {} Kbps. Avg Throughput: {} Kbps", client_ID, frag_size, time_end - time_start, throughput_kbps, throughput_cache[client_ID]); 
+              send_message(client_sock, string("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"));
+            }
           }
           else
           {
@@ -546,7 +548,6 @@ int main(int argc, char *argv[])
           //cout << server_message << endl;
         }
         //cout << "server return message: " << server_message << endl;
-        // redirect_request(server_message, client_addresses[i], client_sock);
       }
     }
   }
