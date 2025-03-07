@@ -389,29 +389,35 @@ int main(int argc, char *argv[])
     
     // 设置select超时，避免无限等待
     struct timeval tv;
-    tv.tv_sec = 1;  // 1秒超时
+    tv.tv_sec = 5;  // 增加到5秒超时
     tv.tv_usec = 0;
     
     // 等待活动
+    spdlog::debug("Waiting for activity with {} sockets...", max_fd + 1);
     activity = select(max_fd + 1, &readfds, nullptr, nullptr, &tv);
     
     // 如果select超时，继续下一次循环
     if (activity == 0) {
+      spdlog::debug("Select timeout, no activity");
       continue;
     }
     
     // 如果select出错
     if (activity < 0) {
       if (errno == EINTR) {
+        spdlog::debug("Select interrupted by signal");
         continue;  // 被信号中断，继续下一次循环
       }
-      perror("select error");
+      spdlog::error("Select error: {}", strerror(errno));
       break;  // 其他错误，退出循环
     }
+    
+    spdlog::debug("Activity detected on {} sockets", activity);
 
     // 处理新连接
     if (FD_ISSET(proxy_socket, &readfds))
     {
+      spdlog::info("New connection request received");
       int new_socket = accept(proxy_socket, (struct sockaddr *)&client_address,
                               &addrlen);
       if (new_socket < 0)
@@ -444,6 +450,7 @@ int main(int argc, char *argv[])
       // 处理客户端数据
       if (client_sock != 0 && FD_ISSET(client_sock, &readfds))
       {
+        spdlog::info("Activity on client socket {}", client_sock);
         string client_message, client_ID;
         ssize_t result = read_http(client_sock, client_message, client_ID);
         
@@ -533,16 +540,16 @@ int main(int argc, char *argv[])
               spdlog::info("Handling MPD manifest request: {}", file_addr);
               
               // 直接转发请求到服务器
-              send_message(server_sock, client_message);
-              client_states[i] = 1;
-              string file_addr_mod = file_addr.substr(0, file_addr.length() - 4).append("-no-list.mpd");
+              ssize_t sent = send_message(server_sock, client_message);
+              if (sent <= 0) {
+                spdlog::error("Failed to send MPD request to server: {}", strerror(errno));
+                continue;
+              }
               
-              spdlog::info("Manifest requested by {} forwarded to {}:{} for {}", client_ID, inet_ntoa(server_addresses[i].sin_addr), ntohs(server_addresses[i].sin_port), file_addr_mod); 
-              request_cache[i] = string("GET ") + file_addr_mod + client_message.substr(pos - 1);
+              spdlog::info("MPD request sent to server, waiting for response...");
               
               // 立即读取服务器响应
               string server_response, temp_id;
-              spdlog::info("Reading MPD response from server");
               
               // 使用阻塞模式读取
               int flags = fcntl(server_sock, F_GETFL, 0);
@@ -550,7 +557,7 @@ int main(int argc, char *argv[])
               
               // 设置超时
               struct timeval tv;
-              tv.tv_sec = 5; // 5秒超时
+              tv.tv_sec = 10; // 增加到10秒超时
               tv.tv_usec = 0;
               setsockopt(server_sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
               
@@ -574,6 +581,32 @@ int main(int argc, char *argv[])
                 server_response.append(buffer, bytes);
                 total_bytes += bytes;
                 spdlog::info("Read {} bytes from server, total: {}", bytes, total_bytes);
+                
+                // 检查是否已经读取了完整的HTTP响应
+                if (server_response.find("\r\n\r\n") != string::npos) {
+                  // 解析Content-Length
+                  size_t content_length = 0;
+                  size_t pos = server_response.find("Content-Length:");
+                  if (pos != string::npos) {
+                    size_t end_pos = server_response.find("\r\n", pos);
+                    if (end_pos != string::npos) {
+                      string length_str = server_response.substr(pos + 15, end_pos - pos - 15);
+                      try {
+                        content_length = stoul(length_str);
+                        spdlog::info("MPD Content-Length: {}", content_length);
+                      } catch (const exception& e) {
+                        spdlog::error("Failed to parse Content-Length: {}", e.what());
+                      }
+                    }
+                  }
+                  
+                  // 如果已经读取了完整的响应，跳出循环
+                  size_t header_end = server_response.find("\r\n\r\n");
+                  if (content_length > 0 && server_response.length() >= header_end + 4 + content_length) {
+                    spdlog::info("Complete MPD response received");
+                    break;
+                  }
+                }
               }
               
               // 恢复非阻塞模式
@@ -589,51 +622,105 @@ int main(int argc, char *argv[])
                 size_t content_pos = server_response.find("\r\n\r\n");
                 if (content_pos != string::npos && !client_ID.empty()) {
                   string content = server_response.substr(content_pos + 4);
+                  spdlog::info("Parsing MPD content ({} bytes)", content.length());
                   bandwidths[client_ID] = get_available_bandwidths(content);
                   sort(bandwidths[client_ID].begin(), bandwidths[client_ID].end());
                   spdlog::info("Extracted {} bandwidth options for client {}: ", bandwidths[client_ID].size(), client_ID);
                   for (size_t j = 0; j < bandwidths[client_ID].size(); j++) {
                     spdlog::info("  Bandwidth option {}: {} Kbps", j, bandwidths[client_ID][j]);
                   }
+                } else {
+                  spdlog::error("Failed to find content in MPD response or client ID is empty");
                 }
+                
+                // 将MPD响应发送给客户端
+                spdlog::info("Forwarding MPD response to client ({} bytes)", server_response.length());
+                sent = send_message(client_sock, server_response);
+                if (sent != server_response.length()) {
+                  spdlog::error("Failed to send complete MPD response to client: sent {} of {} bytes", 
+                               sent, server_response.length());
+                } else {
+                  spdlog::info("Successfully sent MPD response to client");
+                }
+                
+                // 准备修改后的MPD请求
+                string file_addr_mod = file_addr.substr(0, file_addr.length() - 4).append("-no-list.mpd");
+                string modified_request = string("GET ") + file_addr_mod + client_message.substr(pos - 1);
+                spdlog::info("Prepared modified MPD request: {}", file_addr_mod);
                 
                 // 发送修改后的请求到服务器
-                spdlog::info("Sending modified request to server: {}", request_cache[i]);
-                send_message(server_sock, request_cache[i]);
-                
-                // 读取修改后的MPD响应
-                server_response.clear();
-                total_bytes = 0;
-                
-                while (true) {
-                  int bytes = recv(server_sock, buffer, sizeof(buffer), 0);
-                  if (bytes <= 0) {
-                    if (bytes == 0) {
-                      spdlog::info("Server closed connection after sending {} bytes", total_bytes);
-                    } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                      spdlog::info("Timeout reached after reading {} bytes", total_bytes);
-                    } else {
-                      spdlog::error("Error reading from server: {}", strerror(errno));
+                spdlog::info("Sending modified request to server");
+                sent = send_message(server_sock, modified_request);
+                if (sent <= 0) {
+                  spdlog::error("Failed to send modified MPD request to server: {}", strerror(errno));
+                } else {
+                  spdlog::info("Modified MPD request sent to server");
+                  
+                  // 读取修改后的MPD响应
+                  server_response.clear();
+                  total_bytes = 0;
+                  
+                  while (true) {
+                    int bytes = recv(server_sock, buffer, sizeof(buffer), 0);
+                    if (bytes <= 0) {
+                      if (bytes == 0) {
+                        spdlog::info("Server closed connection after sending {} bytes", total_bytes);
+                      } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        spdlog::info("Timeout reached after reading {} bytes", total_bytes);
+                      } else {
+                        spdlog::error("Error reading from server: {}", strerror(errno));
+                      }
+                      break;
                     }
-                    break;
+                    
+                    server_response.append(buffer, bytes);
+                    total_bytes += bytes;
+                    spdlog::info("Read {} bytes from server, total: {}", bytes, total_bytes);
+                    
+                    // 检查是否已经读取了完整的HTTP响应
+                    if (server_response.find("\r\n\r\n") != string::npos) {
+                      // 解析Content-Length
+                      size_t content_length = 0;
+                      size_t pos = server_response.find("Content-Length:");
+                      if (pos != string::npos) {
+                        size_t end_pos = server_response.find("\r\n", pos);
+                        if (end_pos != string::npos) {
+                          string length_str = server_response.substr(pos + 15, end_pos - pos - 15);
+                          try {
+                            content_length = stoul(length_str);
+                            spdlog::info("Modified MPD Content-Length: {}", content_length);
+                          } catch (const exception& e) {
+                            spdlog::error("Failed to parse Content-Length: {}", e.what());
+                          }
+                        }
+                      }
+                      
+                      // 如果已经读取了完整的响应，跳出循环
+                      size_t header_end = server_response.find("\r\n\r\n");
+                      if (content_length > 0 && server_response.length() >= header_end + 4 + content_length) {
+                        spdlog::info("Complete modified MPD response received");
+                        break;
+                      }
+                    }
                   }
                   
-                  server_response.append(buffer, bytes);
-                  total_bytes += bytes;
-                  spdlog::info("Read {} bytes from server, total: {}", bytes, total_bytes);
+                  // 将修改后的MPD响应发送给客户端
+                  if (total_bytes > 0) {
+                    spdlog::info("Forwarding modified MPD response to client ({} bytes)", server_response.length());
+                    sent = send_message(client_sock, server_response);
+                    if (sent != server_response.length()) {
+                      spdlog::error("Failed to send complete modified MPD response to client: sent {} of {} bytes", 
+                                   sent, server_response.length());
+                    } else {
+                      spdlog::info("Successfully sent modified MPD response to client");
+                    }
+                  } else {
+                    spdlog::error("No data received from server for modified MPD request");
+                  }
                 }
-                
-                // 将修改后的MPD响应发送给客户端
-                spdlog::info("Forwarding modified MPD response to client ({} bytes)", server_response.length());
-                send_message(client_sock, server_response);
               } else {
                 spdlog::error("No data received from server for MPD request");
               }
-              
-              // 清除请求缓存
-              request_cache[i].clear();
-              // 重置状态
-              client_states[i] = 0;
             }
             else if (file_addr.length() >= 5 && file_addr.substr(file_addr.length() - 4, 4) == ".m4s") 
             {
@@ -656,36 +743,224 @@ int main(int argc, char *argv[])
               }
               
               if (flag && !bandwidths[client_ID].empty()) {
+                spdlog::info("Adaptive bitrate segment request detected");
                 if (throughput_cache.find(client_ID) == throughput_cache.end()) {
                   throughput_cache[client_ID] = 0.0;
                   // 如果没有吞吐量数据，使用最低比特率
                   int lowest_bitrate_index = 0;
                   string file_addr_mod = file_addr.substr(0, pos_b+5) + to_string(bandwidths[client_ID][lowest_bitrate_index]) + file_addr.substr(pos_d);
-                  spdlog::info("First segment requested by {} forwarded to {}:{} as {} at bitrate {} Kbps", client_ID, inet_ntoa(server_addresses[i].sin_addr), ntohs(server_addresses[i].sin_port), file_addr_mod, bandwidths[client_ID][lowest_bitrate_index]); 
-                  send_message(server_sock, string("GET ") + file_addr_mod + client_message.substr(pos - 1));
+                  spdlog::info("First segment requested by {} forwarded to {}:{} as {} at bitrate {} Kbps", 
+                              client_ID, inet_ntoa(server_addresses[i].sin_addr), ntohs(server_addresses[i].sin_port), 
+                              file_addr_mod, bandwidths[client_ID][lowest_bitrate_index]); 
+                  
+                  // 发送修改后的请求
+                  string modified_request = string("GET ") + file_addr_mod + client_message.substr(pos - 1);
+                  ssize_t sent = send_message(server_sock, modified_request);
+                  if (sent <= 0) {
+                    spdlog::error("Failed to send segment request to server: {}", strerror(errno));
+                    continue;
+                  }
                 } else {
                   // 根据吞吐量选择合适的比特率
-                  int j = 0;
-                  double target_throughput = throughput_cache[client_ID] * 1.5;
+                  double max_supported_bitrate = throughput_cache[client_ID] / 1.5; // 最大支持的比特率是吞吐量除以1.5
+                  spdlog::info("Current throughput: {} Kbps, max supported bitrate: {} Kbps", 
+                              throughput_cache[client_ID], max_supported_bitrate);
                   
-                  // 找到不超过目标吞吐量的最高比特率
+                  // 找到不超过max_supported_bitrate的最高比特率
+                  int selected_index = 0; // 默认选择最低比特率
                   for (int k = 0; k < bandwidths[client_ID].size(); k++) {
-                    if (bandwidths[client_ID][k] <= target_throughput) {
-                      j = k;
+                    if (bandwidths[client_ID][k] <= max_supported_bitrate) {
+                      selected_index = k; // 更新为当前满足条件的最高比特率
                     } else {
-                      break;
+                      break; // 一旦超过max_supported_bitrate就停止
                     }
                   }
                   
-                  string file_addr_mod = file_addr.substr(0, pos_b+5) + to_string(bandwidths[client_ID][j]) + file_addr.substr(pos_d);
-                  spdlog::info("Segment requested by {} forwarded to {}:{} as {} at bitrate {} Kbps (throughput: {} Kbps)", 
+                  string file_addr_mod = file_addr.substr(0, pos_b+5) + to_string(bandwidths[client_ID][selected_index]) + file_addr.substr(pos_d);
+                  spdlog::info("Segment requested by {} forwarded to {}:{} as {} at bitrate {} Kbps (throughput: {} Kbps, max supported: {} Kbps)", 
                               client_ID, inet_ntoa(server_addresses[i].sin_addr), ntohs(server_addresses[i].sin_port), 
-                              file_addr_mod, bandwidths[client_ID][j], throughput_cache[client_ID]); 
-                  send_message(server_sock, string("GET ") + file_addr_mod + client_message.substr(pos - 1));
+                              file_addr_mod, bandwidths[client_ID][selected_index], throughput_cache[client_ID], max_supported_bitrate); 
+                  
+                  // 发送修改后的请求
+                  string modified_request = string("GET ") + file_addr_mod + client_message.substr(pos - 1);
+                  ssize_t sent = send_message(server_sock, modified_request);
+                  if (sent <= 0) {
+                    spdlog::error("Failed to send segment request to server: {}", strerror(errno));
+                    continue;
+                  }
                 }
-              } else {
+                
+                // 读取视频分段响应
+                string server_response;
+                
+                // 使用阻塞模式读取
+                int flags = fcntl(server_sock, F_GETFL, 0);
+                fcntl(server_sock, F_SETFL, flags & ~O_NONBLOCK);
+                
+                // 设置超时
+                struct timeval tv;
+                tv.tv_sec = 30; // 30秒超时，视频分段可能很大
+                tv.tv_usec = 0;
+                setsockopt(server_sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+                
+                // 读取数据直到连接关闭或超时
+                char buffer[65536]; // 使用大缓冲区
+                int total_bytes = 0;
+                size_t content_length = 0;
+                bool header_complete = false;
+                
+                while (true) {
+                  int bytes = recv(server_sock, buffer, sizeof(buffer), 0);
+                  if (bytes <= 0) {
+                    if (bytes == 0) {
+                      spdlog::info("Server closed connection after sending {} bytes", total_bytes);
+                    } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                      spdlog::info("Timeout reached after reading {} bytes", total_bytes);
+                    } else {
+                      spdlog::error("Error reading from server: {}", strerror(errno));
+                    }
+                    break;
+                  }
+                  
+                  server_response.append(buffer, bytes);
+                  total_bytes += bytes;
+                  
+                  // 只在第一次读取时解析头部
+                  if (!header_complete) {
+                    size_t header_end = server_response.find("\r\n\r\n");
+                    if (header_end != string::npos) {
+                      header_complete = true;
+                      
+                      // 解析Content-Length
+                      size_t pos = server_response.find("Content-Length:");
+                      if (pos != string::npos) {
+                        size_t end_pos = server_response.find("\r\n", pos);
+                        if (end_pos != string::npos) {
+                          string length_str = server_response.substr(pos + 15, end_pos - pos - 15);
+                          try {
+                            content_length = stoul(length_str);
+                            spdlog::info("Segment Content-Length: {}", content_length);
+                          } catch (const exception& e) {
+                            spdlog::error("Failed to parse Content-Length: {}", e.what());
+                          }
+                        }
+                      }
+                      
+                      // 如果没有Content-Length，继续读取直到连接关闭
+                      if (content_length == 0) {
+                        spdlog::info("No Content-Length in segment response, reading until connection closes");
+                      }
+                    }
+                  }
+                  
+                  // 如果已经读取了完整的响应，跳出循环
+                  if (header_complete && content_length > 0 && server_response.length() >= content_length) {
+                    spdlog::info("Complete segment response received");
+                    break;
+                  }
+                  
+                  // 报告进度
+                  if (total_bytes % (1024*1024) < bytes) {
+                    if (content_length > 0) {
+                      spdlog::info("Downloaded {:.1f}% of segment ({}/{} bytes)", 
+                                  100.0 * total_bytes / content_length,
+                                  total_bytes, content_length);
+                    } else {
+                      spdlog::info("Downloaded {} MB of segment", total_bytes / (1024*1024));
+                    }
+                  }
+                }
+                
+                // 恢复非阻塞模式
+                fcntl(server_sock, F_SETFL, flags);
+                
+                // 重置超时
+                tv.tv_sec = 0;
+                tv.tv_usec = 0;
+                setsockopt(server_sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+                
+                // 将视频分段响应发送给客户端
+                if (total_bytes > 0) {
+                  spdlog::info("Forwarding segment response to client ({} bytes)", server_response.length());
+                  ssize_t sent = send_message(client_sock, server_response);
+                  if (sent != server_response.length()) {
+                    spdlog::error("Failed to send complete segment response to client: sent {} of {} bytes", 
+                                 sent, server_response.length());
+                  } else {
+                    spdlog::info("Successfully sent segment response to client");
+                  }
+                } else {
+                  spdlog::error("No data received from server for segment request");
+                }
+              }
+              else {
                 spdlog::info("Forwarding original segment request: {}", file_addr);
-                send_message(server_sock, client_message);
+                ssize_t sent = send_message(server_sock, client_message);
+                if (sent <= 0) {
+                  spdlog::error("Failed to send original segment request to server: {}", strerror(errno));
+                  continue;
+                }
+                
+                // 读取视频分段响应
+                string server_response;
+                
+                // 使用阻塞模式读取
+                int flags = fcntl(server_sock, F_GETFL, 0);
+                fcntl(server_sock, F_SETFL, flags & ~O_NONBLOCK);
+                
+                // 设置超时
+                struct timeval tv;
+                tv.tv_sec = 30; // 30秒超时，视频分段可能很大
+                tv.tv_usec = 0;
+                setsockopt(server_sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+                
+                // 读取数据直到连接关闭或超时
+                char buffer[65536]; // 使用大缓冲区
+                int total_bytes = 0;
+                
+                while (true) {
+                  int bytes = recv(server_sock, buffer, sizeof(buffer), 0);
+                  if (bytes <= 0) {
+                    if (bytes == 0) {
+                      spdlog::info("Server closed connection after sending {} bytes", total_bytes);
+                    } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                      spdlog::info("Timeout reached after reading {} bytes", total_bytes);
+                    } else {
+                      spdlog::error("Error reading from server: {}", strerror(errno));
+                    }
+                    break;
+                  }
+                  
+                  server_response.append(buffer, bytes);
+                  total_bytes += bytes;
+                  
+                  // 报告进度
+                  if (total_bytes % (1024*1024) < bytes) {
+                    spdlog::info("Downloaded {} MB of segment", total_bytes / (1024*1024));
+                  }
+                }
+                
+                // 恢复非阻塞模式
+                fcntl(server_sock, F_SETFL, flags);
+                
+                // 重置超时
+                tv.tv_sec = 0;
+                tv.tv_usec = 0;
+                setsockopt(server_sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+                
+                // 将视频分段响应发送给客户端
+                if (total_bytes > 0) {
+                  spdlog::info("Forwarding original segment response to client ({} bytes)", server_response.length());
+                  ssize_t sent = send_message(client_sock, server_response);
+                  if (sent != server_response.length()) {
+                    spdlog::error("Failed to send complete segment response to client: sent {} of {} bytes", 
+                                 sent, server_response.length());
+                  } else {
+                    spdlog::info("Successfully sent segment response to client");
+                  }
+                } else {
+                  spdlog::error("No data received from server for original segment request");
+                }
               }
             }
             else
@@ -711,6 +986,10 @@ int main(int argc, char *argv[])
             if (colon_pos != string::npos) {
               string key = line.substr(0, colon_pos);
               string value = line.substr(colon_pos + 2);
+              // 移除尾部的\r
+              if (!value.empty() && value.back() == '\r') {
+                value.pop_back();
+              }
               if (strcasecmp(key.c_str(), "x-fragment-size")==0){
                 frag_size = stoul(value);
               }
@@ -720,14 +999,32 @@ int main(int argc, char *argv[])
               else if (strcasecmp(key.c_str(), "x-timestamp-end")==0) {
                 time_end = stoul(value);
               }
+              else if (strcasecmp(key.c_str(), "x-489-uuid")==0) {
+                client_ID = value;
+              }
             }
           }
-          double throughput = (double)frag_size / (time_end - time_start);
-          if (throughput_cache.find(client_ID) == throughput_cache.end()) {
-            throughput_cache[client_ID] = 0;
+          
+          // 确保有有效的时间差和客户端ID
+          if (time_end > time_start && !client_ID.empty()) {
+            // 计算当前吞吐量（Kbps）
+            double throughput = (double)frag_size * 8 / (time_end - time_start); // 转换为Kbps
+            
+            // 初始化或更新吞吐量缓存
+            if (throughput_cache.find(client_ID) == throughput_cache.end()) {
+              throughput_cache[client_ID] = 0.0;
+            }
+            
+            // 使用EWMA更新吞吐量估计
+            throughput_cache[client_ID] = alpha * throughput + (1 - alpha) * throughput_cache[client_ID]; 
+            
+            spdlog::info("Client {} finished receiving a segment of size {} bytes in {} ms. Throughput: {:.2f} Kbps. Avg Throughput: {:.2f} Kbps", 
+                        client_ID, frag_size, time_end - time_start, throughput, throughput_cache[client_ID]); 
+          } else {
+            spdlog::error("Invalid POST data: time_start={}, time_end={}, client_ID={}", time_start, time_end, client_ID);
           }
-          throughput_cache[client_ID] = alpha * throughput + (1 - alpha) * throughput_cache[client_ID]; 
-          spdlog::info("Client {} finished receiving a segment of size {} bytes in {} ms. Throughput: {} Kbps. Avg Throughput: {} Kbps", client_ID, frag_size, time_end - time_start, throughput, throughput_cache[client_ID]); 
+          
+          // 响应客户端
           send_message(client_sock, string("HTTP/1.1 200 OK\r\n\r\n"));
         }
         else
@@ -739,6 +1036,7 @@ int main(int argc, char *argv[])
       // 处理服务器数据
       if (server_sock != 0 && FD_ISSET(server_sock, &readfds))
       {
+        spdlog::info("Activity on server socket {}", server_sock);
         spdlog::info("bingo proxy need read data from server sock {}", server_sock);
         string temp;
         string server_message;

@@ -15,6 +15,7 @@
 #include <pugixml.hpp>
 #include <fcntl.h>
 #include "spdlog/spdlog.h"
+#include <netinet/tcp.h>  
 using namespace std;
 
 #define MAXCLIENTS 30
@@ -74,6 +75,113 @@ ssize_t read_wrap(int socket, char *buffer, size_t length, int &readlen)
   buffer[readlen] = '\0';
   return readlen;
 }
+/*
+ssize_t read_http(int socket_fd, string &response, string &client_ID)
+{
+  spdlog::info("read socket number {}", socket_fd);
+  client_ID.clear();
+  response.clear();
+  
+  // 设置阻塞模式
+  int flags = fcntl(socket_fd, F_GETFL, 0);
+  fcntl(socket_fd, F_SETFL, flags & ~O_NONBLOCK);
+  
+  // 设置超时
+  struct timeval tv;
+  tv.tv_sec = 5; // 5秒超时
+  tv.tv_usec = 0;
+  setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+  
+  // 使用大缓冲区
+  char buffer[65536];
+  int total_bytes = 0;
+  
+  // 读取数据直到连接关闭或超时
+  while (true) {
+    int bytes = recv(socket_fd, buffer, sizeof(buffer), 0);
+    if (bytes <= 0) {
+      if (bytes == 0) {
+        spdlog::info("Connection closed after reading {} bytes", total_bytes);
+      } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        spdlog::info("Timeout reached after reading {} bytes", total_bytes);
+      } else {
+        spdlog::error("Error reading from socket: {}", strerror(errno));
+      }
+      break;
+    }
+    
+    response.append(buffer, bytes);
+    total_bytes += bytes;
+    
+    // 如果这是第一次读取，尝试解析HTTP头部
+    if (total_bytes == bytes) {
+      // 查找头部结束标记
+      size_t header_end = response.find("\r\n\r\n");
+      if (header_end != string::npos) {
+        // 解析头部，查找Content-Length和客户端ID
+        string header = response.substr(0, header_end + 4);
+        istringstream header_stream(header);
+        string line;
+        size_t content_length = 0;
+        bool has_content_length = false;
+        
+        while (getline(header_stream, line) && line != "\r") {
+          size_t colon_pos = line.find(':');
+          if (colon_pos != string::npos) {
+            string key = line.substr(0, colon_pos);
+            string value = line.substr(colon_pos + 2); // Skip ": "
+            
+            // 移除尾部的\r
+            if (!value.empty() && value.back() == '\r') {
+              value.pop_back();
+            }
+            
+            if (strcasecmp(key.c_str(), "Content-Length") == 0) {
+              try {
+                content_length = stoul(value);
+                has_content_length = true;
+                spdlog::info("Content-Length: {}", content_length);
+              }
+              catch (const invalid_argument &) {
+                spdlog::error("Invalid Content-Length");
+              }
+            }
+            else if (strcasecmp(key.c_str(), "X-489-UUID") == 0) {
+              client_ID = value;
+              spdlog::info("Client ID: {}", client_ID);
+            }
+          }
+        }
+        
+        // 如果有Content-Length，检查是否已经读取了所有内容
+        if (has_content_length) {
+          size_t expected_total = header_end + 4 + content_length;
+          if (response.length() >= expected_total) {
+            spdlog::info("Already read complete response ({} bytes)", response.length());
+            break;
+          } else {
+            spdlog::info("Need to read more data (have {}, need {})", response.length(), expected_total);
+          }
+        }
+      }
+    }
+    
+    // 报告进度
+    if (total_bytes % (1024*1024) < bytes) {
+      spdlog::info("Read {} MB total", total_bytes / (1024*1024));
+    }
+  }
+  
+  // 恢复非阻塞模式
+  fcntl(socket_fd, F_SETFL, flags);
+  
+  // 重置超时
+  tv.tv_sec = 0;
+  tv.tv_usec = 0;
+  setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+  
+  return total_bytes;
+}*/
 
 ssize_t read_http(int socket_fd, string &response, string &client_ID)
 {
@@ -83,6 +191,23 @@ ssize_t read_http(int socket_fd, string &response, string &client_ID)
   char temp[4096];
   int readlen;
   ssize_t bytes_read, content_length = 0, pos;
+
+  /*
+  int original_flags = fcntl(socket_fd, F_GETFL);
+  fcntl(socket_fd, F_SETFL, original_flags & ~O_NONBLOCK);
+
+  size_t total_read = 0;
+  while (total_read < content_length) {
+      int bytes = read(socket_fd, buffer, min(chunk_size, content_length - total_read));
+      if (bytes <= 0) break;
+      response.append(buffer, bytes);
+      total_read += bytes;
+  }
+
+  fcntl(socket_fd, F_SETFL, original_flags);
+  */
+  int original_flags = fcntl(socket_fd, F_GETFL);
+  fcntl(socket_fd, F_SETFL, original_flags & ~O_NONBLOCK);
 
   while ((bytes_read = read_wrap(socket_fd, temp, sizeof(temp), readlen)) > 0) {
     buffer.append(temp, readlen);
@@ -135,6 +260,9 @@ ssize_t read_http(int socket_fd, string &response, string &client_ID)
     }
     response.append(content);
   }
+
+  fcntl(socket_fd, F_SETFL, original_flags);
+
   return bytes_read;
 }
 
@@ -158,6 +286,8 @@ int get_server_socket(struct sockaddr_in *address, int server_port, string &host
     perror("setsockopt");
     exit(EXIT_FAILURE);
   }
+  
+  setsockopt(server_socket, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 
   address->sin_family = AF_INET;
   address->sin_port = htons(server_port);
@@ -257,10 +387,19 @@ int main(int argc, char *argv[])
     perror("socket failed");
     exit(EXIT_FAILURE);
   }
+
+  int socket_opt = 1;
+  if (setsockopt(proxy_socket, SOL_SOCKET, SO_REUSEADDR, &socket_opt, sizeof(socket_opt)) < 0)
+  {
+    perror("setsockopt failed");
+    close(proxy_socket);
+    exit(EXIT_FAILURE);
+  }
+
   proxy_address.sin_family = AF_INET;
   proxy_address.sin_port = htons(listen_port);
   proxy_address.sin_addr.s_addr = inet_addr(hostname.c_str());
-  if (bind(proxy_socket, (struct sockaddr *)&proxy_address, sizeof(proxy_address)) < 0)
+  if (::bind(proxy_socket, (struct sockaddr *)&proxy_address, sizeof(proxy_address)) < 0)
   {
     perror("bind failed");
     close(proxy_socket);
@@ -288,6 +427,12 @@ int main(int argc, char *argv[])
 
     // add master socket to set
     FD_SET(proxy_socket, &readfds);
+
+    socklen_t addrlen = sizeof(client_address);  
+
+    memset(&client_address, 0, sizeof(client_address)); 
+    addrlen = sizeof(client_address);
+
     for (int i = 0; i < MAXCLIENTS; i++)
     {
       client_sock = client_sockets[i];
@@ -313,8 +458,8 @@ int main(int argc, char *argv[])
     if (FD_ISSET(proxy_socket, &readfds))
     {
       // cout << "proxy: incoming connection" << endl;
-      int new_socket = accept(proxy_socket, (struct sockaddr *)&client_address,
-                              (socklen_t *)&addrlen);
+      int new_socket = accept(proxy_socket, (struct sockaddr *)&client_address, (socklen_t *)&addrlen);
+      setsockopt(new_socket, IPPROTO_TCP, TCP_NODELAY, &socket_opt, sizeof(socket_opt));
       if (new_socket < 0)
       {
         perror("accept");
@@ -516,7 +661,7 @@ int main(int argc, char *argv[])
           read_http(server_sock, server_message, temp);
           send_message(client_sock, server_message);
         }
-        else if (client_states[i] == 1)
+        else if (client_states[i] == 1) 
         {
           client_states[i] = 0;
           // read_http(server_sock, server_message);
