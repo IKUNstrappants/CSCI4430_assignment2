@@ -79,113 +79,6 @@ ssize_t read_wrap(int socket, char *buffer, size_t length, int &readlen)
   buffer[readlen] = '\0';
   return readlen;
 }
-/*
-ssize_t read_http(int socket_fd, string &response, string &client_ID)
-{
-  spdlog::info("read socket number {}", socket_fd);
-  client_ID.clear();
-  response.clear();
-  
-  // 设置阻塞模式
-  int flags = fcntl(socket_fd, F_GETFL, 0);
-  fcntl(socket_fd, F_SETFL, flags & ~O_NONBLOCK);
-  
-  // 设置超时
-  struct timeval tv;
-  tv.tv_sec = 5; // 5秒超时
-  tv.tv_usec = 0;
-  setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
-  
-  // 使用大缓冲区
-  char buffer[65536];
-  int total_bytes = 0;
-  
-  // 读取数据直到连接关闭或超时
-  while (true) {
-    int bytes = recv(socket_fd, buffer, sizeof(buffer), 0);
-    if (bytes <= 0) {
-      if (bytes == 0) {
-        spdlog::info("Connection closed after reading {} bytes", total_bytes);
-      } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        spdlog::info("Timeout reached after reading {} bytes", total_bytes);
-      } else {
-        spdlog::error("Error reading from socket: {}", strerror(errno));
-      }
-      break;
-    }
-    
-    response.append(buffer, bytes);
-    total_bytes += bytes;
-    
-    // 如果这是第一次读取，尝试解析HTTP头部
-    if (total_bytes == bytes) {
-      // 查找头部结束标记
-      size_t header_end = response.find("\r\n\r\n");
-      if (header_end != string::npos) {
-        // 解析头部，查找Content-Length和客户端ID
-        string header = response.substr(0, header_end + 4);
-        istringstream header_stream(header);
-        string line;
-        size_t content_length = 0;
-        bool has_content_length = false;
-        
-        while (getline(header_stream, line) && line != "\r") {
-          size_t colon_pos = line.find(':');
-          if (colon_pos != string::npos) {
-            string key = line.substr(0, colon_pos);
-            string value = line.substr(colon_pos + 2); // Skip ": "
-            
-            // 移除尾部的\r
-            if (!value.empty() && value.back() == '\r') {
-              value.pop_back();
-            }
-            
-            if (strcasecmp(key.c_str(), "Content-Length") == 0) {
-              try {
-                content_length = stoul(value);
-                has_content_length = true;
-                spdlog::info("Content-Length: {}", content_length);
-              }
-              catch (const invalid_argument &) {
-                spdlog::error("Invalid Content-Length");
-              }
-            }
-            else if (strcasecmp(key.c_str(), "X-489-UUID") == 0) {
-              client_ID = value;
-              spdlog::info("Client ID: {}", client_ID);
-            }
-          }
-        }
-        
-        // 如果有Content-Length，检查是否已经读取了所有内容
-        if (has_content_length) {
-          size_t expected_total = header_end + 4 + content_length;
-          if (response.length() >= expected_total) {
-            spdlog::info("Already read complete response ({} bytes)", response.length());
-            break;
-          } else {
-            spdlog::info("Need to read more data (have {}, need {})", response.length(), expected_total);
-          }
-        }
-      }
-    }
-    
-    // 报告进度
-    if (total_bytes % (1024*1024) < bytes) {
-      spdlog::info("Read {} MB total", total_bytes / (1024*1024));
-    }
-  }
-  
-  // 恢复非阻塞模式
-  fcntl(socket_fd, F_SETFL, flags);
-  
-  // 重置超时
-  tv.tv_sec = 0;
-  tv.tv_usec = 0;
-  setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
-  
-  return total_bytes;
-}*/
 
 ssize_t read_http(int socket_fd, string &response, string &client_ID)
 {
@@ -628,7 +521,8 @@ int main(int argc, char *argv[])
           {
             //cout << "{{{{{{ POST message }}}}}}" << endl;
             //cout << client_message << endl;
-            int frag_size = 0, time_start = 0, time_end = 0;
+            int frag_size = 0;
+            long long time_start = 0, time_end = 0;
             istringstream header_stream(client_message);
             string line;
             while (getline(header_stream, line) && line != "\r") {
@@ -636,35 +530,32 @@ int main(int argc, char *argv[])
               if (colon_pos != string::npos) {
                 string key = line.substr(0, colon_pos);
                 string value = line.substr(colon_pos + 2); // 跳过 ": "
-                if (strcasecmp(key.c_str(), "x-fragment-size")==0){
-                  frag_size = stoul(value);
+                value = value.substr(0, value.length()-1);
+                //spdlog::info("[{}]: [{}]", key, value);
+                if (strcasecmp(key.c_str(), "X-Fragment-Size")==0){
+                  frag_size = stoi(value);
+                  //spdlog::info("frag_size={}", frag_size);
                 }
-                else if (strcasecmp(key.c_str(), "x-timestamp-start")==0) {
-                  time_start = stoul(value);
+                else if (strcasecmp(key.c_str(), "X-Timestamp-Start")==0) {
+                  time_start = stoll(value);
+                  //spdlog::info("time_start={}", time_start);
                 }
-                else if (strcasecmp(key.c_str(), "x-timestamp-end")==0) {
-                  time_end = stoul(value);
+                else if (strcasecmp(key.c_str(), "X-Timestamp-End")==0) {
+                  time_end = stoll(value);
+                  //spdlog::info("time_end={}", time_end);
                 }
               }
             }
-            /*double throughput = (double)frag_size / (time_end - time_start);
-            if (throughput_cache.find(client_ID) == throughput_cache.end()) {
-              throughput_cache[client_ID] = 0;
-              
-            }
-            throughput_cache[client_ID] = alpha * throughput + (1 - alpha) * throughput_cache[client_ID];
-            spdlog::info("Client {} finished receiving a segment of size {} bytes in {} ms. Throughput: {} Kbps. Avg Throughput: {} Kbps", client_ID, frag_size, time_end - time_start, throughput, throughput_cache[client_ID]); 
-            send_message(client_sock, string("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"));
-            */
+            
             if (time_end <= time_start) {
               spdlog::error("Invalid timestamps from client {}", client_ID);
             } else {
-                double time_diff_ms = time_end - time_start;
-                double throughput_kbps = (frag_size * 8 / 1024.0) / (time_diff_ms / 1000.0); // 转换为Kbps
+                int time_diff_s = (time_end - time_start) / 1000.0;
+                double throughput_kbps = (frag_size / 1024.0) / time_diff_s; // 转换为Kbps
                 throughput_cache[client_ID] = alpha * throughput_kbps + (1 - alpha) * throughput_cache[client_ID];
-                //spdlog::info("Updated throughput for {}: {} Kbps", client_ID, throughput_cache[client_ID]);
+                
                 spdlog::info("Client {} finished receiving a segment of size {} bytes in {} ms. Throughput: {} Kbps. Avg Throughput: {} Kbps", client_ID, frag_size, time_end - time_start, throughput_kbps, throughput_cache[client_ID]); 
-              send_message(client_sock, string("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"));
+              send_message(client_sock, string("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK"));
             }
           }
           else
@@ -676,11 +567,10 @@ int main(int argc, char *argv[])
       }
       if (client_sock != 0 && server_sock != 0 && FD_ISSET(server_sock, &readfds))
       {
-        //cout << "check server[" << i << ']' << endl;
         string temp;
         string server_message;
         int readlen = 0;
-        // read_wrap(server_sock, buffer, 4096, readlen);server_message = buffer;
+
         if (client_states[i] == 0)
         {
           read_http(server_sock, server_message, temp);
@@ -703,7 +593,7 @@ int main(int argc, char *argv[])
             if (colon_pos != string::npos) {
               //cout << "[" << line.substr(0, line.length()-1) << "]" << endl;
               string key = line.substr(0, colon_pos);
-              string value = line.substr(colon_pos + 2); // 跳过 ": "
+              string value = line.substr(colon_pos + 2); 
               if (strcasecmp(key.c_str(), "X-489-UUID")==0) {
                 client_ID = value;
               }
