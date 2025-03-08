@@ -79,113 +79,6 @@ ssize_t read_wrap(int socket, char *buffer, size_t length, int &readlen)
   buffer[readlen] = '\0';
   return readlen;
 }
-/*
-ssize_t read_http(int socket_fd, string &response, string &client_ID)
-{
-  spdlog::info("read socket number {}", socket_fd);
-  client_ID.clear();
-  response.clear();
-  
-  // 设置阻塞模式
-  int flags = fcntl(socket_fd, F_GETFL, 0);
-  fcntl(socket_fd, F_SETFL, flags & ~O_NONBLOCK);
-  
-  // 设置超时
-  struct timeval tv;
-  tv.tv_sec = 5; // 5秒超时
-  tv.tv_usec = 0;
-  setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
-  
-  // 使用大缓冲区
-  char buffer[65536];
-  int total_bytes = 0;
-  
-  // 读取数据直到连接关闭或超时
-  while (true) {
-    int bytes = recv(socket_fd, buffer, sizeof(buffer), 0);
-    if (bytes <= 0) {
-      if (bytes == 0) {
-        spdlog::info("Connection closed after reading {} bytes", total_bytes);
-      } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        spdlog::info("Timeout reached after reading {} bytes", total_bytes);
-      } else {
-        spdlog::error("Error reading from socket: {}", strerror(errno));
-      }
-      break;
-    }
-    
-    response.append(buffer, bytes);
-    total_bytes += bytes;
-    
-    // 如果这是第一次读取，尝试解析HTTP头部
-    if (total_bytes == bytes) {
-      // 查找头部结束标记
-      size_t header_end = response.find("\r\n\r\n");
-      if (header_end != string::npos) {
-        // 解析头部，查找Content-Length和客户端ID
-        string header = response.substr(0, header_end + 4);
-        istringstream header_stream(header);
-        string line;
-        size_t content_length = 0;
-        bool has_content_length = false;
-        
-        while (getline(header_stream, line) && line != "\r") {
-          size_t colon_pos = line.find(':');
-          if (colon_pos != string::npos) {
-            string key = line.substr(0, colon_pos);
-            string value = line.substr(colon_pos + 2); // Skip ": "
-            
-            // 移除尾部的\r
-            if (!value.empty() && value.back() == '\r') {
-              value.pop_back();
-            }
-            
-            if (strcasecmp(key.c_str(), "Content-Length") == 0) {
-              try {
-                content_length = stoul(value);
-                has_content_length = true;
-                spdlog::info("Content-Length: {}", content_length);
-              }
-              catch (const invalid_argument &) {
-                spdlog::error("Invalid Content-Length");
-              }
-            }
-            else if (strcasecmp(key.c_str(), "X-489-UUID") == 0) {
-              client_ID = value;
-              spdlog::info("Client ID: {}", client_ID);
-            }
-          }
-        }
-        
-        // 如果有Content-Length，检查是否已经读取了所有内容
-        if (has_content_length) {
-          size_t expected_total = header_end + 4 + content_length;
-          if (response.length() >= expected_total) {
-            spdlog::info("Already read complete response ({} bytes)", response.length());
-            break;
-          } else {
-            spdlog::info("Need to read more data (have {}, need {})", response.length(), expected_total);
-          }
-        }
-      }
-    }
-    
-    // 报告进度
-    if (total_bytes % (1024*1024) < bytes) {
-      spdlog::info("Read {} MB total", total_bytes / (1024*1024));
-    }
-  }
-  
-  // 恢复非阻塞模式
-  fcntl(socket_fd, F_SETFL, flags);
-  
-  // 重置超时
-  tv.tv_sec = 0;
-  tv.tv_usec = 0;
-  setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
-  
-  return total_bytes;
-}*/
 
 ssize_t read_http(int socket_fd, string &response, string &client_ID)
 {
@@ -359,7 +252,7 @@ int main(int argc, char *argv[])
   vector<int> cache;
   map<string, vector<int>> bandwidths;
   vector<string> request_cache(30);
-  map<string, int> throughput_cache;
+  map<string, double> throughput_cache;
   int proxy_socket, addrlen, activity, valread;
   int client_sockets[MAXCLIENTS] = {0};
   int client_states[MAXCLIENTS] = {0};
@@ -591,20 +484,20 @@ int main(int argc, char *argv[])
                 if (flag) {
                   //cout << "select bandwidth" << endl;
                   if (throughput_cache.find(client_ID) == throughput_cache.end()) {
-                    throughput_cache[client_ID] = 0;
+                    throughput_cache[client_ID] = 0.0;
                   }
                   /*if (bandwidths.find(client_ID) == bandwidths.end()) {
                     cout << "bandwidth for client_ID not found" << endl;
                   }*/
                   int selected_bw = bandwidths[client_ID].front(); // 默认最小带宽
                   for (int bw : bandwidths[client_ID]) {
-                      if (bw * 2 <= throughput_cache[client_ID] * 3) {
+                      if (bw <= throughput_cache[client_ID] * 1.5) {
                           selected_bw = bw; // 遍历升序列表，最终选中最大的可用值
                       } else {
                           break;
                       }
                   }
-
+                  //cout << "current bandwidth: " << bandwidths[client_ID][j] << ", throughput: " << throughput_cache[client_ID] << endl;
                   string file_addr_mod = file_addr.substr(0, pos_b+5) + to_string(selected_bw) + file_addr.substr(pos_d);
                   //cout <<"modified message: " << string("GET ") + file_addr_mod + client_message.substr(pos - 1) << endl;
                   spdlog::info("Segment requested by {} forwarded to {}:{} as {} at bitrate {} Kbps", client_ID, inet_ntoa(server_addresses[i].sin_addr), ntohs(server_addresses[i].sin_port), file_addr_mod, selected_bw); 
@@ -657,9 +550,9 @@ int main(int argc, char *argv[])
             if (time_end <= time_start) {
               spdlog::error("Invalid timestamps from client {}", client_ID);
             } else {
-                double time_diff_s = (time_end - time_start) / 1000;
+                int time_diff_s = (time_end - time_start) / 1000.0;
                 double throughput_kbps = (frag_size / 1024.0) / time_diff_s; // 转换为Kbps
-                throughput_cache[client_ID] = (int)(alpha * throughput_kbps + (1.0 - alpha) * throughput_cache[client_ID]);
+                throughput_cache[client_ID] = alpha * throughput_kbps + (1 - alpha) * throughput_cache[client_ID];
                 
                 spdlog::info("Client {} finished receiving a segment of size {} bytes in {} ms. Throughput: {} Kbps. Avg Throughput: {} Kbps", client_ID, frag_size, time_end - time_start, throughput_kbps, throughput_cache[client_ID]); 
               send_message(client_sock, string("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK"));
