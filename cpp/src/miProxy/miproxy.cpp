@@ -349,7 +349,7 @@ int main(int argc, char *argv[])
         
         LoadBalancerRequest request;
         request.client_addr = client_address.sin_addr.s_addr;
-        spdlog::info("{},{}",inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port));
+        //spdlo::info("{},{}",inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port));
         request.request_id = htons(rand() % 65536); 
         ssize_t send_bytes = send(lb_fd,&request,sizeof(request),0);
 
@@ -375,7 +375,7 @@ int main(int argc, char *argv[])
         addr.s_addr = response.videoserver_addr;
         const char *actual_ip_addr = inet_ntoa(addr);
         string ip_str(actual_ip_addr);
-        spdlog::info("ip address is {} , port is {}",actual_ip_addr,actual_server_port);
+        //spdlo::info("ip address is {} , port is {}",actual_ip_addr,actual_server_port);
 
       for (int i = 0; i < MAXCLIENTS && client_sockets[i] != new_socket; i++)
       {
@@ -531,18 +531,18 @@ int main(int argc, char *argv[])
                 string key = line.substr(0, colon_pos);
                 string value = line.substr(colon_pos + 2); // 跳过 ": "
                 value = value.substr(0, value.length()-1);
-                //spdlog::info("[{}]: [{}]", key, value);
+                //spdlo::info("[{}]: [{}]", key, value);
                 if (strcasecmp(key.c_str(), "X-Fragment-Size")==0){
                   frag_size = stoi(value);
-                  //spdlog::info("frag_size={}", frag_size);
+                  //pdlog::info("frag_size={}", frag_size);
                 }
                 else if (strcasecmp(key.c_str(), "X-Timestamp-Start")==0) {
                   time_start = stoll(value);
-                  //spdlog::info("time_start={}", time_start);
+                  //pdlog::info("time_start={}", time_start);
                 }
                 else if (strcasecmp(key.c_str(), "X-Timestamp-End")==0) {
                   time_end = stoll(value);
-                  //spdlog::info("time_end={}", time_end);
+                  //pdlog::info("time_end={}", time_end);
                 }
               }
             }
@@ -550,11 +550,12 @@ int main(int argc, char *argv[])
             if (time_end <= time_start) {
               spdlog::error("Invalid timestamps from client {}", client_ID);
             } else {
-                int time_diff_s = (time_end - time_start) / 1000.0;
+                double time_diff_s = (time_end - time_start) / 1000.0;
                 double throughput_kbps = (frag_size / 1024.0) / time_diff_s; // 转换为Kbps
                 throughput_cache[client_ID] = alpha * throughput_kbps + (1 - alpha) * throughput_cache[client_ID];
-                
-                spdlog::info("Client {} finished receiving a segment of size {} bytes in {} ms. Throughput: {} Kbps. Avg Throughput: {} Kbps", client_ID, frag_size, time_end - time_start, throughput_kbps, throughput_cache[client_ID]); 
+                //spdlog::debug("throughput_kbps=[{}], tput_cache=[{}]", throughput_kbps, throughput_cache[client_ID]);
+                //cout << throughput_kbps << ", " << throughput_cache[client_ID] << endl;
+                spdlog::info("Client {} finished receiving a segment of size {} bytes in {} ms. Throughput: {} Kbps. Avg Throughput: {} Kbps", client_ID, frag_size, time_end - time_start, floor(throughput_kbps), floor(throughput_cache[client_ID])); 
               send_message(client_sock, string("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK"));
             }
           }
