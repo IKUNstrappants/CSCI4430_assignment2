@@ -400,14 +400,9 @@ int main(int argc, char *argv[])
   }
   spdlog::info("miProxy started");
 
-  memset(&client_address, 0, sizeof (client_address));		
-	socklen_t client_addr_len = sizeof(client_address);
   char buffer[8192]; // data buffer of 1KiB + 1 bytes
 
-  int lb_fd;
-  if(load_balancing){
-    lb_fd = run_client(hostname.c_str(),server_port);
-  }
+
   fd_set readfds;
   while (1)
   {
@@ -456,14 +451,18 @@ int main(int argc, char *argv[])
       spdlog::info("New client socket connected with {}:{} on sockfd {}", inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port), new_socket);
 
       if(load_balancing){
+        int lb_fd;
+        lb_fd = run_client(hostname.c_str(),server_port);
         
         LoadBalancerRequest request;
         request.client_addr = client_address.sin_addr.s_addr;
+        spdlog::info("{},{}",inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port));
         request.request_id = htons(rand() % 65536); 
         ssize_t send_bytes = send(lb_fd,&request,sizeof(request),0);
 
         LoadBalancerResponse response;
         char buffer[sizeof(LoadBalancerResponse)];
+        memset(buffer, 0, sizeof(buffer));
         ssize_t recvd = 0;
 
         while (recvd < sizeof(LoadBalancerResponse)) {
@@ -474,7 +473,7 @@ int main(int argc, char *argv[])
             }
             recvd += rval;
         }
-
+        
         memcpy(&response, buffer, sizeof(LoadBalancerResponse));
 
 
@@ -483,7 +482,7 @@ int main(int argc, char *argv[])
         addr.s_addr = response.videoserver_addr;
         const char *actual_ip_addr = inet_ntoa(addr);
         string ip_str(actual_ip_addr);
-        // spdlog::info("ip address is{},port is {}",actual_ip_addr,actual_server_port);
+        spdlog::info("ip address is{},port is {}",actual_ip_addr,actual_server_port);
 
       for (int i = 0; i < MAXCLIENTS && client_sockets[i] != new_socket; i++)
       {

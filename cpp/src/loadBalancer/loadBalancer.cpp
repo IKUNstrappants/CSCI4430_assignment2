@@ -268,6 +268,7 @@ int main(int argc, const char **argv){
     while(true){
 
     int connectionfd = accept(sockfd, 0, 0);
+    spdlog::info("connect");
 	if (connectionfd == -1) {
 		perror("Error accepting connection");
 		return -1;
