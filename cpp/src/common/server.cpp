@@ -30,7 +30,7 @@ int run_server(int port, int queue_size) {
 	}
 
 	// (3b) Bind to the port.
-	if (bind(sockfd, (sockaddr *) &addr, sizeof(addr)) == -1) {
+	if (::bind(sockfd, (sockaddr *) &addr, sizeof(addr)) < 0) {
 		perror("Error binding stream socket");
 		return -1;
 	}
@@ -42,5 +42,22 @@ int run_server(int port, int queue_size) {
 	// (4) Begin listening for incoming connections.
 	listen(sockfd, queue_size);
 
+	return sockfd;
+}
+
+int run_client(const char *hostname, int port){
+	size_t total = 0;
+
+	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+
+	struct sockaddr_in addr;
+	if (make_client_sockaddr(&addr, hostname, port) == -1) {
+		return -1;
+	}
+
+	if (connect(sockfd, (sockaddr *) &addr, sizeof(addr)) == -1) {
+		perror("Error connecting stream socket");
+		return -1;
+	}
 	return sockfd;
 }

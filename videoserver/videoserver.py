@@ -40,7 +40,7 @@ class VideoServer:
         
         self.app.static('/', WEBSERVER_DIR / 'static/index.html')
         self.app.static('/index.html', WEBSERVER_DIR / 'static/index.html', name='index')
-        self.app.static('/favicon.ico', WEBSERVER_DIR / 'static/favicon.ico', name='favicon')
+        # self.app.static('/favicon.ico', WEBSERVER_DIR / 'static/favicon.ico', name='favicon')
         self.app.static('/css', WEBSERVER_DIR / 'static/css', name='css')
         self.app.static('/js', WEBSERVER_DIR / 'static/js', name='js')
         

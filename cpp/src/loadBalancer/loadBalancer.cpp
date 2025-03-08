@@ -61,7 +61,7 @@ public:
         LoadBalancerResponse response;
         
         response.request_id = request.request_id;
-        response.videoserver_addr = htonl(inet_addr(server_lists[CurrentId].first.c_str()));
+        response.videoserver_addr = inet_addr(server_lists[CurrentId].first.c_str());
         response.videoserver_port = htons(server_lists[CurrentId].second);
         spdlog::info("Responded to request ID {} with server {}:{}", ntohs(request.request_id), server_lists[CurrentId].first, server_lists[CurrentId].second);
 
@@ -182,6 +182,7 @@ public:
                 return i;
             }
         }
+        spdlog::info("no found1");
         return -1;
     }
 
@@ -234,6 +235,7 @@ int main(int argc, const char **argv){
     auto result = options.parse(argc, argv);
 
     int port = result["port"].as<int>();
+    spdlog::info("port is {}",port);
     if (port < 1024 || port > 65535) {
         exit(1);
     }
