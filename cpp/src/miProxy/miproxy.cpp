@@ -359,7 +359,7 @@ int main(int argc, char *argv[])
   vector<int> cache;
   map<string, vector<int>> bandwidths;
   vector<string> request_cache(30);
-  map<string, double> throughput_cache;
+  map<string, int> throughput_cache;
   int proxy_socket, addrlen, activity, valread;
   int client_sockets[MAXCLIENTS] = {0};
   int client_states[MAXCLIENTS] = {0};
@@ -482,7 +482,7 @@ int main(int argc, char *argv[])
         addr.s_addr = response.videoserver_addr;
         const char *actual_ip_addr = inet_ntoa(addr);
         string ip_str(actual_ip_addr);
-        spdlog::info("ip address is{},port is {}",actual_ip_addr,actual_server_port);
+        spdlog::info("ip address is {} , port is {}",actual_ip_addr,actual_server_port);
 
       for (int i = 0; i < MAXCLIENTS && client_sockets[i] != new_socket; i++)
       {
@@ -591,20 +591,20 @@ int main(int argc, char *argv[])
                 if (flag) {
                   //cout << "select bandwidth" << endl;
                   if (throughput_cache.find(client_ID) == throughput_cache.end()) {
-                    throughput_cache[client_ID] = 0.0;
+                    throughput_cache[client_ID] = 0;
                   }
                   /*if (bandwidths.find(client_ID) == bandwidths.end()) {
                     cout << "bandwidth for client_ID not found" << endl;
                   }*/
                   int selected_bw = bandwidths[client_ID].front(); // 默认最小带宽
                   for (int bw : bandwidths[client_ID]) {
-                      if (bw <= throughput_cache[client_ID] * 1.5) {
+                      if (bw * 2 <= throughput_cache[client_ID] * 3) {
                           selected_bw = bw; // 遍历升序列表，最终选中最大的可用值
                       } else {
                           break;
                       }
                   }
-                  //cout << "current bandwidth: " << bandwidths[client_ID][j] << ", throughput: " << throughput_cache[client_ID] << endl;
+
                   string file_addr_mod = file_addr.substr(0, pos_b+5) + to_string(selected_bw) + file_addr.substr(pos_d);
                   //cout <<"modified message: " << string("GET ") + file_addr_mod + client_message.substr(pos - 1) << endl;
                   spdlog::info("Segment requested by {} forwarded to {}:{} as {} at bitrate {} Kbps", client_ID, inet_ntoa(server_addresses[i].sin_addr), ntohs(server_addresses[i].sin_port), file_addr_mod, selected_bw); 
@@ -628,7 +628,8 @@ int main(int argc, char *argv[])
           {
             //cout << "{{{{{{ POST message }}}}}}" << endl;
             //cout << client_message << endl;
-            int frag_size = 0, time_start = 0, time_end = 0;
+            int frag_size = 0;
+            long long time_start = 0, time_end = 0;
             istringstream header_stream(client_message);
             string line;
             while (getline(header_stream, line) && line != "\r") {
@@ -636,35 +637,32 @@ int main(int argc, char *argv[])
               if (colon_pos != string::npos) {
                 string key = line.substr(0, colon_pos);
                 string value = line.substr(colon_pos + 2); // 跳过 ": "
-                if (strcasecmp(key.c_str(), "x-fragment-size")==0){
-                  frag_size = stoul(value);
+                value = value.substr(0, value.length()-1);
+                //spdlog::info("[{}]: [{}]", key, value);
+                if (strcasecmp(key.c_str(), "X-Fragment-Size")==0){
+                  frag_size = stoi(value);
+                  //spdlog::info("frag_size={}", frag_size);
                 }
-                else if (strcasecmp(key.c_str(), "x-timestamp-start")==0) {
-                  time_start = stoul(value);
+                else if (strcasecmp(key.c_str(), "X-Timestamp-Start")==0) {
+                  time_start = stoll(value);
+                  //spdlog::info("time_start={}", time_start);
                 }
-                else if (strcasecmp(key.c_str(), "x-timestamp-end")==0) {
-                  time_end = stoul(value);
+                else if (strcasecmp(key.c_str(), "X-Timestamp-End")==0) {
+                  time_end = stoll(value);
+                  //spdlog::info("time_end={}", time_end);
                 }
               }
             }
-            /*double throughput = (double)frag_size / (time_end - time_start);
-            if (throughput_cache.find(client_ID) == throughput_cache.end()) {
-              throughput_cache[client_ID] = 0;
-              
-            }
-            throughput_cache[client_ID] = alpha * throughput + (1 - alpha) * throughput_cache[client_ID];
-            spdlog::info("Client {} finished receiving a segment of size {} bytes in {} ms. Throughput: {} Kbps. Avg Throughput: {} Kbps", client_ID, frag_size, time_end - time_start, throughput, throughput_cache[client_ID]); 
-            send_message(client_sock, string("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"));
-            */
+            
             if (time_end <= time_start) {
               spdlog::error("Invalid timestamps from client {}", client_ID);
             } else {
-                double time_diff_ms = time_end - time_start;
-                double throughput_kbps = (frag_size / 1024.0) / (time_diff_ms / 1000.0); // 转换为Kbps
-                throughput_cache[client_ID] = alpha * throughput_kbps + (1 - alpha) * throughput_cache[client_ID];
-                //spdlog::info("Updated throughput for {}: {} Kbps", client_ID, throughput_cache[client_ID]);
+                double time_diff_s = (time_end - time_start) / 1000;
+                double throughput_kbps = (frag_size / 1024.0) / time_diff_s; // 转换为Kbps
+                throughput_cache[client_ID] = (int)(alpha * throughput_kbps + (1.0 - alpha) * throughput_cache[client_ID]);
+                
                 spdlog::info("Client {} finished receiving a segment of size {} bytes in {} ms. Throughput: {} Kbps. Avg Throughput: {} Kbps", client_ID, frag_size, time_end - time_start, throughput_kbps, throughput_cache[client_ID]); 
-              send_message(client_sock, string("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"));
+              send_message(client_sock, string("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK"));
             }
           }
           else
@@ -676,11 +674,10 @@ int main(int argc, char *argv[])
       }
       if (client_sock != 0 && server_sock != 0 && FD_ISSET(server_sock, &readfds))
       {
-        //cout << "check server[" << i << ']' << endl;
         string temp;
         string server_message;
         int readlen = 0;
-        // read_wrap(server_sock, buffer, 4096, readlen);server_message = buffer;
+
         if (client_states[i] == 0)
         {
           read_http(server_sock, server_message, temp);
@@ -703,7 +700,7 @@ int main(int argc, char *argv[])
             if (colon_pos != string::npos) {
               //cout << "[" << line.substr(0, line.length()-1) << "]" << endl;
               string key = line.substr(0, colon_pos);
-              string value = line.substr(colon_pos + 2); // 跳过 ": "
+              string value = line.substr(colon_pos + 2); 
               if (strcasecmp(key.c_str(), "X-489-UUID")==0) {
                 client_ID = value;
               }
