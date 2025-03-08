@@ -64,20 +64,20 @@ vector<int> get_available_bandwidths(const string& xml_content) {
 ssize_t read_wrap(int socket, char *buffer, size_t length, int &readlen)
 {
   readlen = read(socket, buffer, length);
-    if (readlen < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return 0; // 非阻塞无数据
-        } else {
-            cerr << "Read error: " << strerror(errno) << endl;
-            return -1;
-        }
-    } else if (readlen == 0) { // 对端关闭连接
-        return 0; // 或定义特殊返回值（如 -2）
+  if (readlen < 0)
+  {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      //cout << "read 0, pass" << endl;
+      return 0; // 非错误，只是暂时无数据
+    } 
+    else {
+      cerr << "Read " << length << " bytes on socket " << socket << " failed: " << strerror(errno) << endl;
+      return -1;
     }
-    
-    // 可选：仅在处理文本协议时添加终止符
-    // buffer[readlen] = '\0';
-    return readlen;
+  }
+  //cout << "Read " << readlen << " bytes" << endl;
+  buffer[readlen] = '\0';
+  return readlen;
 }
 /*
 ssize_t read_http(int socket_fd, string &response, string &client_ID)
@@ -277,6 +277,7 @@ int get_server_socket(struct sockaddr_in *address, int server_port, string &host
     exit(EXIT_FAILURE);
   }
   
+  setsockopt(server_socket, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 
   address->sin_family = AF_INET;
   address->sin_port = htons(server_port);
@@ -322,18 +323,6 @@ int main(int argc, char *argv[])
           std::cout << options.help() << std::endl;
           return 0;
       }
-
-        // 运行模式判断
-        if (load_balancing) {
-            std::cout << "Running in Load Balancing Mode (Method 2)" << std::endl;
-            std::cout << "LB Server: " << hostname << ":" << server_port << std::endl;
-        } else {
-            std::cout << "Running in Single Server Mode (Method 1)" << std::endl;
-            std::cout << "Video Server: " << hostname << ":" << server_port << std::endl;
-        }
-
-        std::cout << "Proxy listening on port: " << listen_port << std::endl;
-        std::cout << "Using alpha: " << alpha << std::endl;
 
         listen_port = result["listen-port"].as<int>();
         hostname = result["hostname"].as<string>();
@@ -427,6 +416,10 @@ int main(int argc, char *argv[])
     FD_ZERO(&readfds);
     FD_SET(proxy_socket, &readfds);
 
+    socklen_t addrlen = sizeof(client_address);  
+
+    memset(&client_address, 0, sizeof(client_address)); 
+    addrlen = sizeof(client_address);
 
     for (int i = 0; i < MAXCLIENTS; i++)
     {
@@ -453,7 +446,7 @@ int main(int argc, char *argv[])
     if (FD_ISSET(proxy_socket, &readfds))
     {
       // cout << "proxy: incoming connection" << endl;
-      int new_socket = accept(proxy_socket, (struct sockaddr *)&client_address, &client_addr_len);
+      int new_socket = accept(proxy_socket, (struct sockaddr *)&client_address, (socklen_t *)&addrlen);
       setsockopt(new_socket, IPPROTO_TCP, TCP_NODELAY, &socket_opt, sizeof(socket_opt));
       if (new_socket < 0)
       {
