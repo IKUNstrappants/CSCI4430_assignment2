@@ -22,7 +22,7 @@
 #include <netinet/in.h>
 using namespace std;
 
-#define MAXCLIENTS 30
+#define MAXCLIENTS 510
 
 void set_nonblocking(int socket)
 {
@@ -295,7 +295,7 @@ int main(int argc, char *argv[])
 
   char buffer[8192]; // data buffer of 1KiB + 1 bytes
 
-
+  int client_socket_counter = 0;
   fd_set readfds;
   while (1)
   {
@@ -308,15 +308,21 @@ int main(int argc, char *argv[])
 
     memset(&client_address, 0, sizeof(client_address)); 
     addrlen = sizeof(client_address);
-
+    int valid_count = 0;
     for (int i = 0; i < MAXCLIENTS; i++)
     {
+      //spdlog::info("client socket has been connected {}",client_socket_counter);
+      if (valid_count >= client_socket_counter){
+        break;
+      }
       client_sock = client_sockets[i];
       server_sock = client_servers[i];
       if (client_sock != 0)
       {
         FD_SET(client_sock, &readfds);
         FD_SET(server_sock, &readfds);
+        valid_count += 1;
+        //spdlog::info("valid socket number {}",valid_count);
       }
     }
     // cout << "added client sockets to readfds" << endl;
@@ -349,11 +355,7 @@ int main(int argc, char *argv[])
         
         LoadBalancerRequest request;
         request.client_addr = client_address.sin_addr.s_addr;
-<<<<<<< HEAD
         // spdlog::info("{},{}",inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port));
-=======
-        //spdlo::info("{},{}",inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port));
->>>>>>> 09260f312504c9d42438cfd7f33f70596edd781f
         request.request_id = htons(rand() % 65536); 
         ssize_t send_bytes = send(lb_fd,&request,sizeof(request),0);
 
@@ -379,11 +381,7 @@ int main(int argc, char *argv[])
         addr.s_addr = response.videoserver_addr;
         const char *actual_ip_addr = inet_ntoa(addr);
         string ip_str(actual_ip_addr);
-<<<<<<< HEAD
         // spdlog::info("ip address is{},port is {}",actual_ip_addr,actual_server_port);
-=======
-        //spdlo::info("ip address is {} , port is {}",actual_ip_addr,actual_server_port);
->>>>>>> 09260f312504c9d42438cfd7f33f70596edd781f
 
       for (int i = 0; i < MAXCLIENTS && client_sockets[i] != new_socket; i++)
       {
@@ -395,6 +393,7 @@ int main(int argc, char *argv[])
           client_addresses[i] = client_address;
           set_nonblocking(client_sockets[i]);
           set_nonblocking(client_servers[i]);
+          client_socket_counter += 1;
           break;
         }
       }
@@ -410,6 +409,7 @@ int main(int argc, char *argv[])
           client_addresses[i] = client_address;
           set_nonblocking(client_sockets[i]);
           set_nonblocking(client_servers[i]);
+          client_socket_counter += 1;
           break;
         }
       }
@@ -432,7 +432,7 @@ int main(int argc, char *argv[])
         string client_message, client_ID;
         ssize_t result = read_http(client_sock, client_message, client_ID);
         //cout << "[" << endl << client_message << "]" << endl;
-        if (result <= 0)
+        if (result < 0)
         {
           spdlog::info("Client socket sockfd {} disconnected", client_sock); 
           // Somebody disconnected , get their details and print
@@ -443,6 +443,9 @@ int main(int argc, char *argv[])
           client_sockets[i] = 0;
           close(server_sock);
           client_servers[i] = 0;
+          client_socket_counter -= 1;
+          spdlog::info("delete one");
+
         } else if (result == 0) {
           //cout << "pass" << endl;
         } else {
@@ -546,11 +549,11 @@ int main(int argc, char *argv[])
                 }
                 else if (strcasecmp(key.c_str(), "X-Timestamp-Start")==0) {
                   time_start = stoll(value);
-                  //pdlog::info("time_start={}", time_start);
+                  //spdlog::info("time_start={}", time_start);
                 }
                 else if (strcasecmp(key.c_str(), "X-Timestamp-End")==0) {
                   time_end = stoll(value);
-                  //pdlog::info("time_end={}", time_end);
+                  //spdlog::info("time_end={}", time_end);
                 }
               }
             }
@@ -563,7 +566,9 @@ int main(int argc, char *argv[])
                 throughput_cache[client_ID] = alpha * throughput_kbps + (1 - alpha) * throughput_cache[client_ID];
                 //spdlog::debug("throughput_kbps=[{}], tput_cache=[{}]", throughput_kbps, throughput_cache[client_ID]);
                 //cout << throughput_kbps << ", " << throughput_cache[client_ID] << endl;
-                spdlog::info("Client {} finished receiving a segment of size {} bytes in {} ms. Throughput: {} Kbps. Avg Throughput: {} Kbps", client_ID, frag_size, time_end - time_start, floor(throughput_kbps), floor(throughput_cache[client_ID])); 
+                int segment_dur = time_end - time_start;
+                int f_size = frag_size;
+                spdlog::info("Client {} finished receiving a segment of size {} bytes in {} ms. Throughput: {} Kbps. Avg Throughput: {} Kbps", client_ID, f_size, segment_dur, floor(throughput_kbps), floor(throughput_cache[client_ID])); 
               send_message(client_sock, string("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK"));
             }
           }
